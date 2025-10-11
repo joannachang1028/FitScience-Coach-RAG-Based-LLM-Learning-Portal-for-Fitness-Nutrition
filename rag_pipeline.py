@@ -372,7 +372,7 @@ Answer:"""
             response = requests.post(
                 "http://localhost:11434/api/generate",
                 json=payload,
-                timeout=30
+                timeout=60
             )
             
             if response.status_code == 200:
@@ -381,6 +381,10 @@ Answer:"""
             else:
                 return f"Ollama API error: {response.status_code} - {response.text}"
             
+        except requests.exceptions.Timeout as e:
+            return f"Ollama request timed out after 60 seconds. Please try again."
+        except requests.exceptions.ConnectionError as e:
+            return f"Could not connect to Ollama. Please ensure Ollama is running: {e}"
         except requests.exceptions.RequestException as e:
             return f"Error connecting to Ollama: {e}"
         except Exception as e:
@@ -444,7 +448,11 @@ Answer:"""
         """Generate answer using LLM with corpus context + general knowledge"""
         # Try to get Ollama working
         if self.llm == "ollama":
-            return self.generate_ollama_response(context_text, question, docs)
+            try:
+                return self.generate_ollama_response(context_text, question, docs)
+            except Exception as e:
+                print(f"⚠️ Ollama failed, falling back to corpus-only response: {e}")
+                return self._create_corpus_fallback_response(docs, question)
         else:
             # Try to connect to Ollama
             if self.use_llama:
@@ -458,14 +466,35 @@ Answer:"""
                         if llama_model:
                             print("✅ Ollama connected! Generating answer...")
                             self.llm = "ollama"
-                            return self.generate_ollama_response(context_text, question, docs)
-                except:
-                    pass
+                            try:
+                                return self.generate_ollama_response(context_text, question, docs)
+                            except Exception as e:
+                                print(f"⚠️ Ollama failed after connection, falling back to corpus-only response: {e}")
+                                return self._create_corpus_fallback_response(docs, question)
+                except Exception as e:
+                    print(f"⚠️ Could not connect to Ollama: {e}")
             
             # If no LLM available, show helpful message
             return self._no_llm_message(docs)
     
     
+    def _create_corpus_fallback_response(self, docs, question: str) -> str:
+        """Create a helpful response using only corpus content when LLM fails"""
+        if not docs:
+            return ("I couldn't find specific information about your question in my knowledge base. "
+                   "Please try rephrasing your question or ask about training, nutrition, supplements, or health topics.")
+        
+        # Extract key information from the top documents
+        content_chunks = []
+        for doc in docs[:3]:  # Use top 3 most relevant sources
+            content = doc.page_content[:500]  # First 500 chars
+            source = doc.metadata.get('source', 'Unknown source')
+            content_chunks.append(f"**From {source}:**\n{content}...")
+        
+        return ("Based on my knowledge base, here's what I found:\n\n" + 
+               "\n\n".join(content_chunks) + 
+               "\n\n*Note: For more comprehensive answers, ensure Ollama is running with Llama 3.2 1B.*")
+
     def _no_llm_message(self, docs) -> str:
         """Show helpful message when no LLM is available"""
         if not docs:
