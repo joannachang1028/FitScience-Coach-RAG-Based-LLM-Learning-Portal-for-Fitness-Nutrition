@@ -14,8 +14,6 @@ This evaluation uses the **RAGAs (Retrieval-Augmented Generation Assessment)** f
 
 #### **Iterative Improvement Process**
 
-本系統通過迭代改進達到優秀的 RAGAs 分數：
-
 **Version 1.0 - Initial Implementation (Llama 3.2 1B)**
 - Overall Score: 0.779
 - Faithfulness: 0.118
