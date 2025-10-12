@@ -1,11 +1,25 @@
+# Core LangChain and LLM
 langchain==0.1.0
 langchain-openai==0.0.5
 langchain-community==0.0.10
+
+# Web Interface
 streamlit==1.29.0
+
+# Data Processing
 pandas==2.1.4
 numpy==1.24.3
+
+# Vector Store and Embeddings
 faiss-cpu==1.7.4
 sentence-transformers==2.2.2
-beautifulsoup4==4.12.2
+
+# RAGAs Evaluation
+ragas==0.1.0
+datasets==2.14.0
+
+# Utilities
+requests==2.31.0
 python-dotenv==1.0.0
 tiktoken==0.5.2
+beautifulsoup4==4.12.2

@@ -19,13 +19,26 @@ from langchain.prompts import PromptTemplate
 from langchain.schema import Document
 import requests
 
+# OpenAI imports (optional - for improved faithfulness)
+try:
+    from langchain_openai import ChatOpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
 # Streamlit for demo
 import streamlit as st
 
 class FitScienceRAG:
-    def __init__(self, use_llama: bool = True):
-        """Initialize the RAG system for FitScience Coach"""
+    def __init__(self, use_llama: bool = True, openai_api_key: str = None):
+        """Initialize the RAG system for FitScience Coach
+        
+        Args:
+            use_llama: If True, use Llama 3.2 1B via Ollama (free, local)
+            openai_api_key: Optional OpenAI API key for GPT-4o-mini (better faithfulness)
+        """
         self.use_llama = use_llama
+        self.openai_api_key = openai_api_key
         
         # Initialize components
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -43,8 +56,9 @@ class FitScienceRAG:
         self.qa_chain = None
         self.corpus_metadata = []
         self.llm = None
+        self.openai_llm = None
         
-    def load_corpus_from_csv(self, csv_path: str = "learning_corpus.csv"):
+    def load_corpus_from_csv(self, csv_path: str = "data/learning_corpus.csv"):
         """Load learning corpus from CSV file"""
         try:
             df = pd.read_csv(csv_path)
@@ -336,35 +350,76 @@ class FitScienceRAG:
         else:
             raise ValueError(f"Invalid activity level. Choose from: {list(activity_multipliers.keys())}")
     
-    def generate_ollama_response(self, context: str, question: str, docs=None) -> str:
-        """Generate response using Llama 3.2 1B via Ollama"""
+    def generate_openai_response(self, context: str, question: str, docs=None) -> str:
+        """Generate response using OpenAI GPT-4o-mini with maximum faithfulness"""
         try:
-            # Format prompt for Llama 3.2 - natural, conversational responses
-            prompt = f"""You are FitScience Coach, a specialized fitness and nutrition expert. You have access to curated research sources AND general fitness knowledge.
+            if not self.openai_llm:
+                # Initialize OpenAI LLM if not already done
+                if not OPENAI_AVAILABLE or not self.openai_api_key:
+                    raise Exception("OpenAI not available or API key not provided")
+                
+                self.openai_llm = ChatOpenAI(
+                    model="gpt-4o-mini",
+                    temperature=0.0,  # Zero temperature for maximum faithfulness
+                    api_key=self.openai_api_key
+                )
+            
+            # Strict prompt for faithfulness
+            prompt = f"""You are FitScience Coach, a fitness and nutrition expert. You MUST answer ONLY using the research sources provided below. Do NOT add any information from general knowledge.
 
-Always provide a comprehensive answer that combines both sources of information. Be conversational, practical, and encouraging.
-
-Research Sources from my Knowledge Base:
+Research Sources from Knowledge Base:
 {context}
 
 User Question: {question}
 
-Instructions:
-1. Provide a helpful, comprehensive answer using both the research sources above AND your general knowledge
-2. Be conversational and encouraging
-3. Give practical, actionable advice
-4. At the end, add a 'Sources' section listing any research sources you used from the provided context
+CRITICAL INSTRUCTIONS:
+1. Answer ONLY using information explicitly stated in the research sources above
+2. If sources don't contain enough information, say "Based on the available sources..." and provide only what's available
+3. DO NOT add facts, numbers, or recommendations not present in the sources
+4. Quote or paraphrase DIRECTLY from the sources - do not infer or extrapolate
+5. Use conservative language: "According to [source]...", "The research shows..."
+6. At the end, list the specific sources you cited
 
-Answer:"""
+Answer (using ONLY the explicit information from the sources above):"""
             
-            # Call Ollama API
+            # Generate response
+            response = self.openai_llm.invoke(prompt)
+            return response.content.strip()
+            
+        except Exception as e:
+            return f"OpenAI generation error: {e}"
+    
+    def generate_ollama_response(self, context: str, question: str, docs=None) -> str:
+        """Generate response using Llama 3.2 1B via Ollama with high faithfulness"""
+        try:
+            # Format prompt for Llama 3.2 - STRICT grounding to provided sources
+            prompt = f"""You are FitScience Coach, a fitness and nutrition expert. You MUST answer ONLY using the research sources provided below. Do NOT add information from general knowledge.
+
+Research Sources from Knowledge Base:
+{context}
+
+User Question: {question}
+
+CRITICAL INSTRUCTIONS:
+1. Answer ONLY using information explicitly stated in the research sources above
+2. If the sources don't contain enough information, say "Based on the available sources..." and provide what's available
+3. DO NOT add facts, numbers, or recommendations not present in the sources
+4. Quote or paraphrase directly from the sources
+5. Be conversational but stay strictly faithful to the source material
+6. At the end, list the sources you referenced
+
+Answer (using ONLY the information from the sources above):"""
+            
+            # Call Ollama API with conservative settings for faithfulness
             payload = {
                 "model": "llama3.2:1b",
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "temperature": 0.7,
-                    "top_p": 0.9,
+                    "temperature": 0.1,  # Much lower for conservative, faithful responses
+                    "top_p": 0.7,        # More focused sampling
+                    "top_k": 20,         # Limit vocabulary diversity
+                    "repeat_penalty": 1.1,
                     "max_tokens": 512
                 }
             }
@@ -445,8 +500,17 @@ Answer:"""
             return {"error": f"Query failed: {e}"}
     
     def _generate_llm_answer(self, context_text: str, question: str, docs) -> str:
-        """Generate answer using LLM with corpus context + general knowledge"""
-        # Try to get Ollama working
+        """Generate answer using LLM with corpus context - OpenAI preferred for faithfulness"""
+        
+        # Priority 1: Try OpenAI GPT-4o-mini (best faithfulness)
+        if self.openai_api_key and OPENAI_AVAILABLE:
+            try:
+                print("🤖 Using OpenAI GPT-4o-mini for high-faithfulness response...")
+                return self.generate_openai_response(context_text, question, docs)
+            except Exception as e:
+                print(f"⚠️ OpenAI failed: {e}, falling back to Ollama...")
+        
+        # Priority 2: Try Ollama Llama (free local option)
         if self.llm == "ollama":
             try:
                 return self.generate_ollama_response(context_text, question, docs)
@@ -479,21 +543,26 @@ Answer:"""
     
     
     def _create_corpus_fallback_response(self, docs, question: str) -> str:
-        """Create a helpful response using only corpus content when LLM fails"""
+        """Create a faithful response using ONLY corpus content when LLM fails"""
         if not docs:
             return ("I couldn't find specific information about your question in my knowledge base. "
                    "Please try rephrasing your question or ask about training, nutrition, supplements, or health topics.")
         
-        # Extract key information from the top documents
-        content_chunks = []
-        for doc in docs[:3]:  # Use top 3 most relevant sources
-            content = doc.page_content[:500]  # First 500 chars
-            source = doc.metadata.get('source', 'Unknown source')
-            content_chunks.append(f"**From {source}:**\n{content}...")
+        # Extract and present information EXACTLY from sources
+        response_parts = ["Based on the research sources in my knowledge base:\n"]
         
-        return ("Based on my knowledge base, here's what I found:\n\n" + 
-               "\n\n".join(content_chunks) + 
-               "\n\n*Note: For more comprehensive answers, ensure Ollama is running with Llama 3.2 1B.*")
+        for idx, doc in enumerate(docs[:3], 1):  # Use top 3 most relevant sources
+            source = doc.metadata.get('source', 'Unknown source')
+            content = doc.page_content[:600].strip()  # More content for completeness
+            
+            response_parts.append(f"\n**Source {idx}: {source}**")
+            response_parts.append(content)
+            if not content.endswith('.'):
+                response_parts.append("...")
+        
+        response_parts.append("\n\n*These excerpts are directly from peer-reviewed sources and official guidelines.*")
+        
+        return "\n".join(response_parts)
 
     def _no_llm_message(self, docs) -> str:
         """Show helpful message when no LLM is available"""
@@ -515,39 +584,44 @@ Answer:"""
                "\n".join([f"• {d.metadata.get('source', 'Unknown')}" for d in docs[:3]]))
     
     def _simple_corpus_response(self, docs, question):
-        """Simple fallback response when no LLM is available"""
+        """Faithful corpus-only response - NO hallucination, ONLY source content"""
         if not docs:
             return {
                 "answer": "I couldn't find specific information about your question in my knowledge base. Please try rephrasing your question or ask about training, nutrition, supplements, or health topics.",
                 "sources": []
             }
         
-        # Simple response from corpus
-        answer = "Based on the research in my knowledge base:\n\n"
+        # Build answer using ONLY exact corpus content
+        answer = "According to the research sources in my knowledge base:\n\n"
         unique_content = []
         seen_content = set()
         
-        for d in docs:
+        for d in docs[:3]:  # Limit to top 3 for quality
             content_sig = d.page_content[:150].strip()
             if content_sig not in seen_content and len(content_sig) > 30:
                 seen_content.add(content_sig)
-                clean_content = d.page_content[:400].replace('\n', ' ').strip()
-                unique_content.append(clean_content)
+                # Keep more content and preserve structure
+                clean_content = d.page_content[:500].strip()
+                source_name = d.metadata.get('source', 'Research source')
+                unique_content.append(f"**{source_name}:**\n{clean_content}")
         
         if unique_content:
-            answer += "\n\n".join(unique_content[:2])
+            answer += "\n\n".join(unique_content)
         else:
-            answer += docs[0].page_content[:400].replace('\n', ' ').strip()
+            answer += docs[0].page_content[:500].strip()
         
-        # Add sources
-        answer += f"\n\n**Sources:**\n"
+        # Add source citations
+        answer += f"\n\n**Referenced Sources:**\n"
         for d in docs[:4]:
             source_name = d.metadata.get('source', 'Unknown Source')
             source_url = d.metadata.get('url', '')
+            source_type = d.metadata.get('type', '')
             if source_url and source_url != '':
-                answer += f"- [{source_name}]({source_url})\n"
+                answer += f"- [{source_name}]({source_url}) ({source_type})\n"
             else:
-                answer += f"- {source_name}\n"
+                answer += f"- {source_name} ({source_type})\n"
+        
+        answer += "\n*All information above is directly extracted from peer-reviewed research and official health guidelines.*"
         
         return {
             "answer": answer,

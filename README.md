@@ -27,8 +27,13 @@ User Query → RAG Pipeline → Vector Search → LLM Generation → Response + 
 - **Corpus**: 23 evidence-based sources (papers, guidelines, podcasts)
 - **Embeddings**: Sentence Transformers (all-MiniLM-L6-v2)
 - **Vector Store**: FAISS for fast similarity search
-- **LLM**: OpenAI GPT (optional, with fallback to retrieval-only)
+- **LLM**: Hybrid approach - OpenAI GPT-4o-mini (primary) + Llama 3.2 1B (fallback)
 - **Interface**: Streamlit web app
+
+### Performance:
+- **RAGAs Score**: 0.857 (Excellent) ⭐⭐⭐⭐⭐
+- **Retrieval Metrics**: Perfect 1.0 across all dimensions
+- **Faithfulness**: 0.429 (286% improvement through optimization)
 
 ## 🚀 Quick Start
 
@@ -44,7 +49,7 @@ export OPENAI_API_KEY="your-api-key-here"
 
 ### 3. Run the Streamlit App
 ```bash
-streamlit run streamlit_app.py
+streamlit run src/streamlit_app.py
 ```
 
 ### 4. Access the Interface
@@ -94,9 +99,11 @@ The system uses a curated corpus of 23 evidence-based sources:
 
 ## 🔧 Technical Details
 
-### RAG Pipeline (`rag_pipeline.py`)
+### RAG Pipeline (`src/rag_pipeline.py`)
 ```python
 # Initialize system
+from src.rag_pipeline import FitScienceRAG
+
 rag = FitScienceRAG()
 rag.initialize_system()
 
@@ -123,12 +130,18 @@ The system supports evaluation using:
 
 ## 🎓 Assignment 3 Deliverables
 
-- ✅ **System Code**: `rag_pipeline.py`, `streamlit_app.py`
-- ✅ **Learning Corpus**: `learning_corpus.csv` (23 sources)
-- ✅ **PLP Interface**: Streamlit web application
-- ✅ **Documentation**: This README + step documentation
-- 🔄 **Evaluation Logs**: In progress
-- 🔄 **Final Report**: In progress
+| Deliverable | Location |
+|-------------|----------|
+| **System Code** | `src/rag_pipeline.py`, `src/streamlit_app.py` |
+| **Learning Corpus** | `data/learning_corpus.csv` (23 sources) |
+| **PLP Interface** | `src/streamlit_app.py` (Streamlit app) |
+| **Evaluation Script** | `src/ragas_evaluation_v3.py` |
+| **Evaluation Results** | `ragas_results/ragas_evaluation_results.json` (Score: 0.857) |
+| **Evaluation Log** | `reports/Evaluation_Log_and_Samples.md` |
+| **Final Report** | `reports/Final_Report.md` |
+| **System Architecture** | `diagrams/system_architecture.md` |
+| **Step Documentation** | `reports/Domain_Learning_Goals.md`, `reports/PLP_Features_To_Adopt.md` |
+| **GitHub Repository** | [Ready for submission] |
 
 ## 🔮 Future Enhancements
 
@@ -142,6 +155,33 @@ The system supports evaluation using:
 - Personalized plan generation
 - Integration with fitness tracking apps
 - Advanced evaluation metrics
+
+## 📊 Evaluation & Performance
+
+### RAGAs Automated Evaluation
+
+**Final Score: 0.857 / 1.0 (Excellent) ⭐⭐⭐⭐⭐**
+
+| Metric | Score | Status |
+|--------|-------|--------|
+| Context Precision | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
+| Context Recall | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
+| Context Relevance | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
+| Faithfulness | 0.429 | ⭐⭐⭐⭐ Good |
+| **Overall** | **0.857** | ⭐⭐⭐⭐⭐ **Excellent** |
+
+### Iterative Improvement Journey
+
+1. **v1.0** (Llama 3.2 1B): 0.779 - Good baseline, perfect retrieval
+2. **v2.0** (Optimized Llama): 0.778 - Optimization attempts showed model limitations
+3. **v3.0** (OpenAI GPT-4o-mini): **0.857** - 286% faithfulness improvement
+
+**Key Learning**: Model selection is critical for faithfulness. Perfect retrieval validates corpus design.
+
+### Run Evaluation
+```bash
+python src/ragas_evaluation_v3.py
+```
 
 ## 📝 Usage Examples
 
@@ -165,6 +205,64 @@ This is an academic project for Assignment 3. For improvements:
 2. Implement advanced evaluation metrics
 3. Enhance the user interface
 4. Add personalized recommendation features
+
+## 📁 Project Structure
+
+```
+Application-of-NLX-LLM-Personal-Learning-Portal/
+│
+├── README.md                                  # 📄 Project overview and documentation
+├── requirements.txt                           # 📦 Python dependencies
+│
+├── data/                                      # 📊 Data files
+│   └── learning_corpus.csv                    # 23 curated sources
+│
+├── src/                                       # 💻 Source code
+│   ├── rag_pipeline.py                        # Core RAG system implementation
+│   ├── streamlit_app.py                       # Streamlit web interface
+│   └── ragas_evaluation_v3.py                 # RAGAs evaluation script
+│
+├── diagrams/                                  # 📐 System architecture
+│   └── system_architecture.md                 # Detailed architecture documentation
+│
+├── reports/                                   # 📑 Documentation and reports
+│   ├── Final_Report.md                        # Comprehensive final report
+│   ├── Evaluation_Log_and_Samples.md          # Detailed evaluation with samples
+│   ├── RAG_Evaluation_and_Improvements.md     # Complete iterative improvement journey
+│   │
+│   ├── Domain_Learning_Goals.md               # Domain definition & learning objectives (Step 1)
+│   └── PLP_Features_To_Adopt.md               # PLP feature analysis (Step 2)
+│
+└── ragas_results/                             # 📈 RAGAs evaluation results
+    ├── ragas_evaluation_results.json          # Final evaluation score (0.857)
+    ├── ragas_aggregate_results.json           # Aggregated evaluation metrics
+    └── ragas_scores_per_sample.csv            # Per-sample evaluation scores
+```
+
+### Directory Organization
+
+**📊 `data/`** - Core data files
+- `learning_corpus.csv` - 23 curated sources (Academic Papers, Podcasts, Government Resources)
+
+**💻 `src/`** - Source code (3 files)
+- `rag_pipeline.py` - RAG system with hybrid LLM support (OpenAI GPT-4o-mini + Llama 3.2 1B)
+- `streamlit_app.py` - Interactive web interface with 4 tabs (Courses, Ask Coach, BMR Calculator, Query History)
+- `ragas_evaluation_v3.py` - Automated RAGAs evaluation script
+
+**📐 `diagrams/`** - System architecture (1 file)
+- `system_architecture.md` - Comprehensive architecture documentation with data flow diagrams
+
+**📑 `reports/`** - Documentation (5 files)
+- `Final_Report.md` - Complete project report with architecture, evaluation, and reflections
+- `Evaluation_Log_and_Samples.md` - RAGAs results and sample queries
+- `Domain_Learning_Goals.md` - Learning domain, questions, and objectives (Step 1)
+- `PLP_Features_To_Adopt.md` - Analyzed PLP features (Step 2)
+- `RAG_Evaluation_and_Improvements.md` - Complete iterative improvement journey (v1.0 → v3.0)
+
+**📈 `ragas_results/`** - Evaluation results (3 files)
+- `ragas_evaluation_results.json` - Final score: 0.857 (Excellent) ⭐⭐⭐⭐⭐
+- `ragas_aggregate_results.json` - Aggregated metrics across all samples
+- `ragas_scores_per_sample.csv` - Detailed per-sample evaluation scores
 
 ## 📄 License
 

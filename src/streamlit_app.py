@@ -119,7 +119,7 @@ if 'bmr_height_in_input' not in st.session_state:
 def load_corpus_data():
     """Load and cache corpus data"""
     try:
-        df = pd.read_csv("learning_corpus.csv")
+        df = pd.read_csv("data/learning_corpus.csv")
         return df
     except Exception as e:
         st.error(f"Error loading corpus: {e}")
