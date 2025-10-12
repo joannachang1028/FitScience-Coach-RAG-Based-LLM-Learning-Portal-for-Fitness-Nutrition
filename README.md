@@ -35,176 +35,7 @@ User Query → RAG Pipeline → Vector Search → LLM Generation → Response + 
 - **Retrieval Metrics**: Perfect 1.0 across all dimensions
 - **Faithfulness**: 0.429 (286% improvement through optimization)
 
-## 🚀 Quick Start
-
-### 1. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Set Environment Variables (Optional)
-```bash
-export OPENAI_API_KEY="your-api-key-here"
-```
-
-### 3. Run the Streamlit App
-```bash
-streamlit run src/streamlit_app.py
-```
-
-### 4. Access the Interface
-Open your browser to `http://localhost:8501`
-
-## 📊 Learning Corpus
-
-The system uses a curated corpus of 23 evidence-based sources:
-
-### Source Types:
-- **Academic Papers**: Protein requirements, BMR calculations, training volume
-- **Guidelines**: ACSM position stands, NSCA recommendations  
-- **Government Resources**: USDA MyPlate, NIH fact sheets, NHS programs
-- **Expert Content**: Jeff Cavaliere (Athlean-X), Diary of a CEO podcast episodes
-- **Research Reviews**: Micronutrients, NEAT, sleep and performance
-
-### Key Domains Covered:
-- ✅ Training programming and progression
-- ✅ Macronutrient targets and timing
-- ✅ Micronutrient needs and sources
-- ✅ Calorie calculation (BMR, TDEE, NEAT)
-- ✅ Sleep and recovery optimization
-- ✅ Evidence-based supplementation
-
-## 🤖 Features
-
-### Ask Coach Tab
-- Interactive Q&A with evidence-based answers
-- Automatic source citations and links
-- Quick question buttons for common topics
-- Query history tracking
-
-### Learning Goals Tab
-- Clear learning objectives and questions
-- Progress tracking metrics
-- Module completion status
-
-### Corpus Explorer Tab
-- Browse and filter all sources
-- Search by keywords
-- View source metadata and links
-
-### Query History Tab
-- Track all interactions
-- Export conversation history
-- Review past questions and answers
-
-## 🔧 Technical Details
-
-### RAG Pipeline (`src/rag_pipeline.py`)
-```python
-# Initialize system
-from src.rag_pipeline import FitScienceRAG
-
-rag = FitScienceRAG()
-rag.initialize_system()
-
-# Query the system
-result = rag.query("How much protein should I eat?")
-```
-
-### Key Classes:
-- `FitScienceRAG`: Main RAG system class
-- Handles corpus loading, embedding, and retrieval
-- Supports both OpenAI and retrieval-only modes
-
-### Vector Store:
-- **Embeddings**: HuggingFace sentence-transformers
-- **Storage**: FAISS for fast similarity search
-- **Chunking**: 1000 chars with 200 overlap
-
-## 📈 Evaluation
-
-The system supports evaluation using:
-- **RAGAs**: Measure factuality, groundedness, context recall
-- **ARES**: Alternative evaluation framework
-- **Manual Assessment**: Review answer quality and source relevance
-
-## 🎓 Assignment 3 Deliverables
-
-| Deliverable | Location |
-|-------------|----------|
-| **System Code** | `src/rag_pipeline.py`, `src/streamlit_app.py` |
-| **Learning Corpus** | `data/learning_corpus.csv` (23 sources) |
-| **PLP Interface** | `src/streamlit_app.py` (Streamlit app) |
-| **Evaluation Script** | `src/ragas_evaluation_v3.py` |
-| **Evaluation Results** | `ragas_results/ragas_evaluation_results.json` (Score: 0.857) |
-| **Evaluation Log** | `reports/Evaluation_Log_and_Samples.md` |
-| **Final Report** | `reports/Final_Report.md` |
-| **System Architecture** | `diagrams/system_architecture.md` |
-| **Step Documentation** | `reports/Domain_Learning_Goals.md`, `reports/PLP_Features_To_Adopt.md` |
-| **GitHub Repository** | [Ready for submission] |
-
-## 🔮 Future Enhancements
-
-### Optional Bonus Features:
-- **Reasoning Agents**: Chain-of-thought reasoning for complex queries
-- **Multi-Agent Workflow**: Planner → Searcher → Summarizer pipeline
-- **Knowledge Graph**: Neo4j integration for concept relationships
-
-### Additional Features:
-- User profile and goal tracking
-- Personalized plan generation
-- Integration with fitness tracking apps
-- Advanced evaluation metrics
-
-## 📊 Evaluation & Performance
-
-### RAGAs Automated Evaluation
-
-**Final Score: 0.857 / 1.0 (Excellent) ⭐⭐⭐⭐⭐**
-
-| Metric | Score | Status |
-|--------|-------|--------|
-| Context Precision | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
-| Context Recall | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
-| Context Relevance | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
-| Faithfulness | 0.429 | ⭐⭐⭐⭐ Good |
-| **Overall** | **0.857** | ⭐⭐⭐⭐⭐ **Excellent** |
-
-### Iterative Improvement Journey
-
-1. **v1.0** (Llama 3.2 1B): 0.779 - Good baseline, perfect retrieval
-2. **v2.0** (Optimized Llama): 0.778 - Optimization attempts showed model limitations
-3. **v3.0** (OpenAI GPT-4o-mini): **0.857** - 286% faithfulness improvement
-
-**Key Learning**: Model selection is critical for faithfulness. Perfect retrieval validates corpus design.
-
-### Run Evaluation
-```bash
-python src/ragas_evaluation_v3.py
-```
-
-## 📝 Usage Examples
-
-### Sample Queries:
-1. "How much protein should I eat for muscle building?"
-2. "How do I calculate my daily calorie needs?"
-3. "What is progressive overload in training?"
-4. "What supplements are actually evidence-based?"
-5. "How much sleep do I need for recovery?"
-
-### Expected Output:
-- Evidence-based answers with practical advice
-- Source citations with links to original papers
-- Relevance scores and content previews
-- Structured, actionable recommendations
-
-## 🤝 Contributing
-
-This is an academic project for Assignment 3. For improvements:
-1. Add more diverse sources to the corpus
-2. Implement advanced evaluation metrics
-3. Enhance the user interface
-4. Add personalized recommendation features
+---
 
 ## 📁 Project Structure
 
@@ -263,6 +94,277 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 - `ragas_evaluation_results.json` - Final score: 0.857 (Excellent) ⭐⭐⭐⭐⭐
 - `ragas_aggregate_results.json` - Aggregated metrics across all samples
 - `ragas_scores_per_sample.csv` - Detailed per-sample evaluation scores
+
+---
+
+## 🚀 Quick Start
+
+### 1. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Set Environment Variables (Optional)
+```bash
+export OPENAI_API_KEY="your-api-key-here"
+```
+
+### 3. Run the Streamlit App
+```bash
+streamlit run src/streamlit_app.py
+```
+
+### 4. Access the Interface
+Open your browser to `http://localhost:8501`
+
+---
+
+## 🤖 Core Features
+
+### 1. Intelligent Q&A System
+**Hybrid LLM Approach**:
+- **OpenAI GPT-4o-mini** (Primary): High-faithfulness responses with temperature 0.0
+- **Llama 3.2 1B via Ollama** (Fallback): Free, local LLM option
+- **Corpus-only mode**: Safe fallback with direct source extraction
+
+**Key Capabilities**:
+- Evidence-based answers grounded in curated research
+- Automatic source citations with URLs and metadata
+- Top-8 relevant document retrieval using FAISS
+- Adaptive search: falls back to broader terms if no results found
+- Conservative language: "According to [source]..." for transparency
+
+### 2. BMR & TDEE Calculator
+**Harris-Benedict Equation Implementation**:
+- Calculate Basal Metabolic Rate (BMR) based on:
+  - Weight (kg), Height (cm), Age, Gender
+- Calculate Total Daily Energy Expenditure (TDEE) with activity multipliers:
+  - Sedentary (1.2x)
+  - Lightly Active (1.375x)
+  - Moderately Active (1.55x)
+  - Very Active (1.725x)
+  - Extremely Active (1.9x)
+
+### 3. Learning Corpus Management
+**23 Evidence-Based Sources**:
+- **Academic Papers** (9): Protein requirements, BMR calculations, training volume
+- **Podcasts** (8): Expert interviews on fitness, nutrition, and health
+- **Government Resources** (6): USDA MyPlate, NIH, NHS guidelines
+
+**Content Mapping**:
+- Protein requirements and supplementation
+- BMR/TDEE/NEAT calculations
+- Training progression and periodization
+- Workout splits and program design
+- Micronutrients and supplementation
+- Sleep and recovery optimization
+
+### 4. RAG Pipeline Features
+**Document Processing**:
+- RecursiveCharacterTextSplitter (1000 chars, 200 overlap)
+- Synthetic content generation from corpus metadata
+- HuggingFace embeddings (all-MiniLM-L6-v2, 384 dimensions)
+- FAISS vector store for fast similarity search
+
+**Query Processing**:
+- Retrieve top-8 relevant documents
+- Build context with source metadata
+- Generate LLM response with strict grounding prompts
+- Return answer with source links and previews
+
+**Faithfulness Optimizations**:
+- Temperature 0.0 (OpenAI) / 0.1 (Llama) for conservative responses
+- Strict prompts: "Answer ONLY using information from sources"
+- Top-p 0.7, top-k 20 for focused sampling
+- Explicit source attribution required
+- Corpus fallback for failed LLM responses
+
+### 5. Streamlit Web Interface
+**4 Interactive Tabs**:
+1. **Courses**: Module-based learning paths with progress tracking
+2. **Ask Coach**: Interactive Q&A with quick question buttons
+3. **BMR Calculator**: Harris-Benedict formula with unit conversion
+4. **Query History**: Track all interactions and export history
+
+**Session State Management**:
+- Persistent query history
+- Learning progress tracking
+- Real-time UI updates
+
+---
+
+## 📊 Learning Corpus
+
+The system uses a curated corpus of 23 evidence-based sources:
+
+### Source Types:
+- **Academic Papers**: Protein requirements, BMR calculations, training volume
+- **Government Resources**: USDA MyPlate, NIH fact sheets, NHS programs
+- **Expert Content**: Jeff Cavaliere (Athlean-X), expert podcast episodes
+- **Research Reviews**: Micronutrients, NEAT, sleep and performance
+
+### Key Domains Covered:
+- ✅ Training programming and progression
+- ✅ Macronutrient targets and timing
+- ✅ Micronutrient needs and sources
+- ✅ Calorie calculation (BMR, TDEE, NEAT)
+- ✅ Sleep and recovery optimization
+- ✅ Evidence-based supplementation
+
+---
+
+## 🔧 Technical Details
+
+### RAG Pipeline (`src/rag_pipeline.py`)
+
+**Core Class: `FitScienceRAG`**
+
+```python
+from src.rag_pipeline import FitScienceRAG
+
+# Initialize with optional OpenAI key
+rag = FitScienceRAG(
+    use_llama=True,                    # Enable Ollama fallback
+    openai_api_key="your-key-here"     # Optional for better faithfulness
+)
+
+# Initialize system
+rag.initialize_system()
+
+# Query the system
+result = rag.query("How much protein should I eat?")
+
+# Result structure
+{
+    "answer": "Evidence-based answer with citations...",
+    "sources": [
+        {
+            "title": "Source title",
+            "url": "https://...",
+            "type": "Academic Paper",
+            "relevance": "High",
+            "notes": "Description",
+            "content_preview": "Preview text..."
+        }
+    ]
+}
+```
+
+**Key Methods**:
+- `load_corpus_from_csv()`: Load 23 sources from CSV
+- `create_synthetic_content()`: Generate documents with metadata mapping
+- `build_vectorstore()`: Create FAISS index with HuggingFace embeddings
+- `query()`: Main query interface with hybrid LLM generation
+- `calculate_bmr()`: Harris-Benedict BMR calculation
+- `calculate_tdee()`: TDEE with activity multipliers
+- `generate_openai_response()`: GPT-4o-mini generation (high faithfulness)
+- `generate_ollama_response()`: Llama 3.2 1B generation (free fallback)
+
+**LLM Priority System**:
+1. **OpenAI GPT-4o-mini** (if API key provided): Best faithfulness
+2. **Ollama Llama 3.2 1B** (if available): Free local option
+3. **Corpus-only fallback**: Direct source extraction
+
+### Vector Store:
+- **Embeddings**: HuggingFace sentence-transformers (all-MiniLM-L6-v2)
+- **Storage**: FAISS for fast similarity search
+- **Chunking**: 1000 chars with 200 overlap
+- **Retrieval**: Top-8 documents with metadata
+
+---
+
+## 📈 Evaluation & Performance
+
+### RAGAs Automated Evaluation
+
+**Final Score: 0.857 / 1.0 (Excellent) ⭐⭐⭐⭐⭐**
+
+| Metric | Score | Status |
+|--------|-------|--------|
+| Context Precision | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
+| Context Recall | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
+| Context Relevance | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
+| Faithfulness | 0.429 | ⭐⭐⭐⭐ Good |
+| **Overall** | **0.857** | ⭐⭐⭐⭐⭐ **Excellent** |
+
+### Iterative Improvement Journey
+
+1. **v1.0** (Llama 3.2 1B): 0.779 - Good baseline, perfect retrieval
+2. **v2.0** (Optimized Llama): 0.778 - Optimization attempts showed model limitations
+3. **v3.0** (OpenAI GPT-4o-mini): **0.857** - 286% faithfulness improvement
+
+**Key Learning**: Model selection is critical for faithfulness. Perfect retrieval validates corpus design.
+
+### Run Evaluation
+```bash
+# Set OpenAI API key
+export OPENAI_API_KEY="your-api-key-here"
+
+# Run RAGAs evaluation
+python src/ragas_evaluation_v3.py
+```
+
+---
+
+## 📝 Usage Examples
+
+### Sample Queries:
+1. "How much protein should I eat for muscle building?"
+2. "How do I calculate my daily calorie needs?"
+3. "What is progressive overload in training?"
+4. "What supplements are actually evidence-based?"
+5. "How much sleep do I need for recovery?"
+
+### Expected Output:
+- Evidence-based answers with practical advice
+- Source citations with links to original papers
+- Relevance scores and content previews
+- Structured, actionable recommendations
+
+---
+
+## 🎓 Assignment 3 Deliverables
+
+| Deliverable | Location |
+|-------------|----------|
+| **System Code** | `src/rag_pipeline.py`, `src/streamlit_app.py` |
+| **Learning Corpus** | `data/learning_corpus.csv` (23 sources) |
+| **PLP Interface** | `src/streamlit_app.py` (Streamlit app) |
+| **Evaluation Script** | `src/ragas_evaluation_v3.py` |
+| **Evaluation Results** | `ragas_results/ragas_evaluation_results.json` (Score: 0.857) |
+| **Evaluation Log** | `reports/Evaluation_Log_and_Samples.md` |
+| **Final Report** | `reports/Final_Report.md` |
+| **System Architecture** | `diagrams/system_architecture.md` |
+| **Step Documentation** | `reports/Domain_Learning_Goals.md`, `reports/PLP_Features_To_Adopt.md` |
+| **GitHub Repository** | [Ready for submission] |
+
+---
+
+## 🔮 Future Enhancements
+
+### Optional Bonus Features:
+- **Reasoning Agents**: Chain-of-thought reasoning for complex queries
+- **Multi-Agent Workflow**: Planner → Searcher → Summarizer pipeline
+- **Knowledge Graph**: Neo4j integration for concept relationships
+
+### Additional Features:
+- User profile and goal tracking
+- Personalized plan generation
+- Integration with fitness tracking apps
+- Real document extraction (replace synthetic content)
+- Fine-tuning on domain corpus
+
+---
+
+## 🤝 Contributing
+
+This is an academic project for Assignment 3. For improvements:
+1. Add more diverse sources to the corpus
+2. Implement advanced evaluation metrics
+3. Enhance the user interface
+4. Add personalized recommendation features
+
+---
 
 ## 📄 License
 
