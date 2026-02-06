@@ -4,8 +4,10 @@ Personal Learning Portal for Evidence-Based Fitness & Nutrition
 """
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+# Load .env from project root
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any
@@ -305,8 +307,11 @@ class FitScienceRAG:
             if self.use_groq and GROQ_AVAILABLE and self.groq_api_key:
                 self.llm = "groq"
                 print("✅ Groq Llama ready (free cloud API)")
+            elif self.use_groq and not GROQ_AVAILABLE:
+                print("⚠️ Install langchain-groq: pip install langchain-groq")
+                self.llm = None
             elif self.use_groq and not self.groq_api_key:
-                print("⚠️ GROQ_API_KEY not set - add to .env or set in sidebar. Using corpus-only mode.")
+                print("⚠️ GROQ_API_KEY not set - add to .env and restart app. Using corpus-only mode.")
                 self.llm = None
             else:
                 print("⚠️ Groq disabled. Using corpus-only mode.")
@@ -532,10 +537,10 @@ Answer (using ONLY the information from the sources above):"""
     def _no_llm_message(self, docs) -> str:
         """Show helpful message when no LLM is available"""
         groq_help = (
-            "**To get free AI-powered answers:**\n"
+            "**Host setup only (users don't need to do anything):**\n"
             "• Get a free API key at [console.groq.com](https://console.groq.com)\n"
-            "• Add `GROQ_API_KEY=your-key` to `.env` or paste in sidebar\n"
-            "• Click 'Apply Settings'"
+            "• Add `GROQ_API_KEY=your-key` to `.env` in the project root\n"
+            "• Restart the Streamlit app"
         )
         if not docs:
             return f"I need a Groq API key to provide comprehensive answers. {groq_help}"

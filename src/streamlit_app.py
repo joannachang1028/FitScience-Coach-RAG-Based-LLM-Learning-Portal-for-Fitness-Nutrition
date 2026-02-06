@@ -4,8 +4,10 @@ Personal Learning Portal for Evidence-Based Fitness & Nutrition
 """
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+# Load .env from project root (parent of src/)
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 import streamlit as st
 import pandas as pd
@@ -448,12 +450,16 @@ def main():
             
             st.markdown("---")
         
-        # LLM Settings - API key from .env, no user input needed
+        # LLM Settings - no user input needed; host configures .env
         st.subheader("🔑 LLM Settings")
-        if st.session_state.groq_api_key:
+        rag = st.session_state.rag_system
+        has_llm = rag and rag.llm in ("groq", "openai")
+        if has_llm:
             st.success("🦙 Groq Llama ready — AI answers enabled")
+        elif st.session_state.groq_api_key:
+            st.warning("Key set but LLM not ready. Run: pip install langchain-groq, then restart")
         else:
-            st.warning("Add GROQ_API_KEY to .env to enable AI answers")
+            st.warning("Host: Add GROQ_API_KEY to .env, then restart app")
         st.session_state.use_groq = True
         
         if st.session_state.corpus_data is not None:

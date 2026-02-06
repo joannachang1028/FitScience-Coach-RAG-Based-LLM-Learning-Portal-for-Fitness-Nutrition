@@ -1,5 +1,6 @@
 # Core LangChain and LLM
 langchain==0.1.0
+langchain-core>=0.1.0,<0.2.0  # 0.2+ removed pydantic_v1, breaks langchain-community
 langchain-openai==0.0.5
 langchain-community==0.0.10
 langchain-groq>=0.0.1  # Groq (free tier) - no local install needed
