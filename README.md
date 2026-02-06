@@ -115,7 +115,7 @@ User Query
 │  │ Default: Groq Llama (free cloud)      │  │
 │  │ • No local install                    │  │
 │  │ • Free tier at console.groq.com       │  │
-│  │ • Configure GROQ_API_KEY in .env      │  │
+│  │ • Host configures .env; users use app │  │
 │  └────────────────────────────────────────┘  │
 └──────┬───────────────────────────────────────┘
        │
@@ -218,12 +218,12 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 pip install -r requirements.txt
 ```
 
-### 2. Configure API Key (host only)
-Create a `.env` file with your Groq API key (free at [console.groq.com](https://console.groq.com)):
+### 2. Configure API Key (host only — users do not need to configure anything)
+**Host only:** Create a `.env` file with your Groq API key (free at [console.groq.com](https://console.groq.com)):
 ```
 GROQ_API_KEY=gsk_your-key-here
 ```
-Users visiting the app do **not** need to set any API keys — it works out of the box once the host configures `.env`.
+**Users:** No API key configuration required. Once the host has set up `.env`, users simply open the app and start learning—no sign-up, keys, or setup.
 
 ### 3. Run the Streamlit App
 ```bash
@@ -238,9 +238,9 @@ Open your browser to `http://localhost:8501`
 ## 🤖 Core Features
 
 ### 1. Intelligent Q&A System
-**LLM Approach**:
-- **Groq Llama** (Default): Free cloud API — no OpenAI key or local install needed. Host sets `GROQ_API_KEY` in `.env`; users use the app directly.
-- **OpenAI GPT-4o-mini** (Optional): Add `OPENAI_API_KEY` for higher faithfulness
+**LLM Approach** (host-configured; users need no API keys):
+- **Groq Llama** (Default): Free cloud API — host sets `GROQ_API_KEY` in `.env`; users open the app and ask questions.
+- **OpenAI GPT-4o-mini** (Optional): Host adds `OPENAI_API_KEY` for higher faithfulness
 - **Corpus-only mode**: Safe fallback with direct source extraction when no LLM is configured
 
 **Key Capabilities**:
@@ -336,13 +336,14 @@ The system uses a curated corpus of 23 evidence-based sources:
 **Core Class: `FitScienceRAG`**
 
 ```python
+import os
 from src.rag_pipeline import FitScienceRAG
 
-# Initialize — Groq from .env (no user API key needed)
+# Initialize — host loads keys from .env; users never configure API keys
 rag = FitScienceRAG(
     use_groq=True,                     # Default: Groq Llama (free)
-    groq_api_key="gsk_...",            # Or set GROQ_API_KEY in .env
-    openai_api_key="sk-..."            # Optional: for higher faithfulness
+    groq_api_key=os.getenv("GROQ_API_KEY"),       # Host sets in .env
+    openai_api_key=os.getenv("OPENAI_API_KEY")    # Optional: host sets in .env
 )
 
 # Initialize system
@@ -377,9 +378,9 @@ result = rag.query("How much protein should I eat?")
 - `generate_openai_response()`: GPT-4o-mini (optional, high faithfulness)
 - `generate_groq_response()`: Groq Llama (default, free cloud API)
 
-**LLM Priority System**:
-1. **OpenAI GPT-4o-mini** (if `OPENAI_API_KEY` set): Best faithfulness
-2. **Groq Llama** (if `GROQ_API_KEY` in .env): Free, no user setup
+**LLM Priority System** (host-configured; users do not set API keys):
+1. **OpenAI GPT-4o-mini** (if host sets `OPENAI_API_KEY`): Best faithfulness
+2. **Groq Llama** (if host sets `GROQ_API_KEY` in .env): Free, no user setup
 3. **Corpus-only fallback**: Direct source extraction
 
 ### Vector Store:
@@ -414,7 +415,7 @@ result = rag.query("How much protein should I eat?")
 
 ### Run Evaluation
 ```bash
-# Set GROQ_API_KEY and optionally OPENAI_API_KEY in .env
+# Host: ensure GROQ_API_KEY (and optionally OPENAI_API_KEY) are in .env
 python src/ragas_evaluation_v3.py
 ```
 

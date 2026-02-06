@@ -62,7 +62,8 @@ class FitScienceRAG:
         
         # Use sentence transformers for embeddings (free)
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2"
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"}
         )
         
         self.vectorstore = None
@@ -379,8 +380,8 @@ CRITICAL INSTRUCTIONS:
 2. If sources don't contain enough information, say "Based on the available sources..." and provide only what's available
 3. DO NOT add facts, numbers, or recommendations not present in the sources
 4. Quote or paraphrase DIRECTLY from the sources - do not infer or extrapolate
-5. Use conservative language: "According to [source]...", "The research shows..."
-6. At the end, list the specific sources you cited
+5. Use conservative language: "According to the research...", "The research shows..."
+6. Do NOT include sources or a references list in your answer—they are displayed separately.
 
 Answer (using ONLY the explicit information from the sources above):"""
             
@@ -416,7 +417,7 @@ CRITICAL INSTRUCTIONS:
 3. DO NOT add facts, numbers, or recommendations not present in the sources
 4. Quote or paraphrase directly from the sources
 5. Be conversational but stay strictly faithful to the source material
-6. At the end, list the sources you referenced
+6. Do NOT include sources or a references list in your answer—they are displayed separately.
 
 Answer (using ONLY the information from the sources above):"""
             

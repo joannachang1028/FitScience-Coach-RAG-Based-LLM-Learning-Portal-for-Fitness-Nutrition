@@ -13,7 +13,78 @@ import streamlit as st
 import pandas as pd
 from rag_pipeline import FitScienceRAG
 import json
+import re
 from datetime import datetime
+
+def _parse_quiz_json(text):
+    """Extract and parse JSON array of quiz questions from LLM response."""
+    if not text or not isinstance(text, str):
+        return None
+
+    def _extract_options(obj):
+        for key in ('options', 'choices', 'alternatives', 'answers'):
+            if key in obj and isinstance(obj[key], list):
+                return [str(o) for o in obj[key]]
+        return []
+
+    def _extract_correct(obj, opts):
+        for key in ('correct_index', 'correctIndex', 'correct', 'answer'):
+            v = obj.get(key)
+            if v is None:
+                continue
+            if isinstance(v, int) and 0 <= v < len(opts):
+                return v
+            if isinstance(v, str):
+                v = v.strip().upper()
+                if v in 'ABCD' and ord(v) - ord('A') < len(opts):
+                    return ord(v) - ord('A')
+                for i, o in enumerate(opts):
+                    if v and (v == str(o)[:1].upper() or v in str(o)[:20]):
+                        return i
+        return 0
+
+    # Try to find JSON array (handle markdown ```json ... ``` or raw)
+    for pattern in [r'```(?:json)?\s*([\s\S]*?)\s*```', r'\[[\s\S]*?\]']:
+        match = re.search(pattern, text)
+        if match:
+            raw = match.group(1) if '```' in pattern else match.group(0)
+            raw = re.sub(r',\s*}', '}', raw).replace('\n', ' ')  # fix trailing comma
+            try:
+                data = json.loads(raw)
+                if not isinstance(data, list):
+                    data = [data] if isinstance(data, dict) else []
+                questions = []
+                for q in data:
+                    if not isinstance(q, dict) or 'question' not in q:
+                        continue
+                    opts = _extract_options(q)
+                    if not opts:
+                        continue
+                    q_text = str(q.get('question', q.get('q', '')))
+                    correct = _extract_correct(q, opts)
+                    questions.append({"question": q_text, "options": opts, "correct_index": correct})
+                if questions:
+                    return questions
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+    # Fallback: parse numbered format "1. Q? a) X b) Y c) Z. Answer: A"
+    questions = []
+    blocks = re.split(r'\n\d+\.\s+', text)
+    for block in blocks:
+        if not block.strip():
+            continue
+        q_match = re.match(r'^(.+?)\s*(?:a\)|A\)|a\.|A\.)\s+', block, re.DOTALL | re.IGNORECASE)
+        if not q_match:
+            continue
+        q_text = q_match.group(1).strip().rstrip('?')
+        opts = re.findall(r'[a-dA-D]\)\s*(.+?)(?=\s+[a-dA-D]\)|Answer:|$)', block, re.DOTALL | re.IGNORECASE)
+        opts = [o.strip().rstrip('.;') for o in opts if o.strip()][:4]
+        ans_match = re.search(r'[Aa]nswer[s]?:\s*([a-dA-D])', block)
+        correct = ord((ans_match.group(1) or 'A').upper()) - ord('A') if ans_match else 0
+        if q_text and len(opts) >= 2:
+            questions.append({"question": q_text, "options": opts[:4], "correct_index": min(correct, len(opts)-1)})
+    return questions if len(questions) >= 2 else None
 
 # Page config
 st.set_page_config(
@@ -162,6 +233,10 @@ def main():
     # Load corpus data
     if st.session_state.corpus_data is None:
         st.session_state.corpus_data = load_corpus_data()
+    
+    # Active tab for main content (default Courses)
+    if "active_tab" not in st.session_state:
+        st.session_state.active_tab = "courses"
     
     # Sidebar
     with st.sidebar:
@@ -422,8 +497,49 @@ def main():
                     path_lessons = sum(len(module_info['sources']) for module_info in modules.values())
                     total_lessons_all_paths += path_lessons
                 
-                # Count completed lessons across all paths
-                completed_lessons_all_paths = len([l for l in st.session_state.completed_modules if 'lesson' in l])
+                # Count completed lessons: build lesson ids per path (must match main content keys)
+                # Use same module keys as main content for consistency
+                def _build_path_modules(pname, pdata):
+                    m = {}
+                    if pname == "🏋️‍♂️ Strength Training Fundamentals":
+                        t = pdata[(pdata['Title'].str.contains('progressive overload|resistance training|periodization|training volume', case=False, na=False)) | (pdata['Notes'].str.contains('progressive overload|resistance training|periodization|training volume', case=False, na=False))]
+                        if len(t) > 0: m["💪 Module 1: Training Principles & Progression"] = {"sources": t}
+                        e = pdata[(pdata['Type'] == 'Podcast') & (pdata['Title'].str.contains('Jeff Cavaliere|training|exercise|workout', case=False, na=False))]
+                        if len(e) > 0: m["🏋️‍♂️ Module 2: Expert Training Insights"] = {"sources": e}
+                        g = pdata[pdata['Type'] == 'Government Resource']
+                        if len(g) > 0: m["📚 Module 3: Beginner Program Design"] = {"sources": g}
+                    elif pname == "🥗 Sports Nutrition Mastery":
+                        pr = pdata[(pdata['Title'].str.contains('protein|nutrition', case=False, na=False)) | (pdata['Notes'].str.contains('protein|nutrition', case=False, na=False))]
+                        if len(pr) > 0: m["🥩 Module 1: Protein Science & Requirements"] = {"sources": pr}
+                        s = pdata[(pdata['Title'].str.contains('supplement|micronutrient|vitamin', case=False, na=False)) | (pdata['Notes'].str.contains('supplement|micronutrient|vitamin', case=False, na=False))]
+                        if len(s) > 0: m["💊 Module 2: Supplement Evidence & Micronutrients"] = {"sources": s}
+                        g = pdata[pdata['Type'] == 'Government Resource']
+                        if len(g) > 0: m["🍽️ Module 3: Practical Nutrition Tools"] = {"sources": g}
+                    elif pname == "🔥 Metabolic Science":
+                        b = pdata[(pdata['Title'].str.contains('BMR|metabolic|energy|calorie', case=False, na=False)) | (pdata['Notes'].str.contains('BMR|metabolic|energy|calorie', case=False, na=False))]
+                        if len(b) > 0: m["⚡ Module 1: Energy Systems & BMR"] = {"sources": b}
+                        n = pdata[(pdata['Title'].str.contains('NEAT|activity', case=False, na=False)) | (pdata['Notes'].str.contains('NEAT|activity', case=False, na=False))]
+                        if len(n) > 0: m["🏃‍♂️ Module 2: NEAT & Activity Optimization"] = {"sources": n}
+                        g = pdata[pdata['Type'] == 'Government Resource']
+                        if len(g) > 0: m["📊 Module 3: Metabolic Calculations & Tools"] = {"sources": g}
+                    elif pname == "💤 Recovery & Performance":
+                        sl = pdata[(pdata['Title'].str.contains('sleep|recovery|athletic performance', case=False, na=False)) | (pdata['Notes'].str.contains('sleep|recovery|athletic performance', case=False, na=False))]
+                        if len(sl) > 0: m["😴 Module 1: Sleep Science & Recovery"] = {"sources": sl}
+                        pe = pdata[(pdata['Type'] == 'Podcast') & (pdata['Title'].str.contains('Dr. Peter Attia|performance|longevity', case=False, na=False))]
+                        if len(pe) > 0: m["🧠 Module 2: Performance Optimization Insights"] = {"sources": pe}
+                        g = pdata[pdata['Type'] == 'Government Resource']
+                        if len(g) > 0: m["🏥 Module 3: Health & Recovery Guidelines"] = {"sources": g}
+                    return m
+                all_lesson_ids = set()
+                for pname, pinfo in learning_paths.items():
+                    pt = pinfo.get('topics', [])
+                    pd = st.session_state.corpus_data[(st.session_state.corpus_data['Title'].str.contains('|'.join(pt), case=False, na=False)) | (st.session_state.corpus_data['Notes'].str.contains('|'.join(pt), case=False, na=False))] if pt else st.session_state.corpus_data
+                    pm = _build_path_modules(pname, pd)
+                    pm = {k: v for k, v in pm.items() if len(v['sources']) > 0}
+                    for mid, minfo in pm.items():
+                        for i in range(1, len(minfo['sources']) + 1):
+                            all_lesson_ids.add(f"{mid}_lesson_{i}")
+                completed_lessons_all_paths = len([l for l in st.session_state.completed_modules if l in all_lesson_ids])
                 
                 if total_lessons_all_paths > 0:
                     return (completed_lessons_all_paths / total_lessons_all_paths) * 100
@@ -434,11 +550,14 @@ def main():
             overall_progress = calculate_overall_progress()
             st.session_state.overall_progress = overall_progress
             
-            # Learning path selection
+            # Learning path selection - switch to Courses tab when path changes
+            def _on_path_change():
+                st.session_state.active_tab = "courses"
             selected_path = st.selectbox(
                 "Choose Your Learning Path:",
                 list(learning_paths.keys()),
-                format_func=lambda x: x
+                format_func=lambda x: x,
+                on_change=_on_path_change
             )
             
             if selected_path:
@@ -480,11 +599,21 @@ def main():
             type_counts = st.session_state.corpus_data['Type'].value_counts()
             st.bar_chart(type_counts, color="#2E8B57")
     
-    # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📚 Courses", "🤖 Ask Coach", "🧮 BMR Calculator", "📝 Query History"])
+    # Main content tabs - custom implementation so learning path selection can switch to Courses
+    TAB_OPTIONS = ["📚 Courses", "🤖 Ask Coach", "🧮 BMR Calculator", "📝 Query History"]
+    TAB_KEYS = ["courses", "ask_coach", "bmr", "history"]
+    tab_idx = TAB_KEYS.index(st.session_state.active_tab) if st.session_state.active_tab in TAB_KEYS else 0
+    selected_tab = st.radio(
+        "Navigate",
+        TAB_OPTIONS,
+        index=tab_idx,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="tab_nav"
+    )
+    st.session_state.active_tab = TAB_KEYS[TAB_OPTIONS.index(selected_tab)]
     
-    
-    with tab1:
+    if st.session_state.active_tab == "courses":
         st.markdown('<h2 class="sub-header">🎓 Personal Learning Portal</h2>', unsafe_allow_html=True)
         
         if st.session_state.corpus_data is not None:
@@ -635,13 +764,26 @@ def main():
                 st.markdown("### 📊 Learning Analytics")
                 col1, col2, col3, col4 = st.columns(4)
                 
-                # Calculate analytics data
-                total_lessons = sum(len(module_info['sources']) for module_info in modules.values())
-                completed_lessons = len([l for l in st.session_state.completed_modules if 'lesson' in l])
+                # Build set of lesson ids for current path (for accurate counting)
+                current_lesson_ids = set()
+                for mid, minfo in modules.items():
+                    for idx in range(1, len(minfo['sources']) + 1):
+                        current_lesson_ids.add(f"{mid}_lesson_{idx}")
+                
+                # Completed lessons: only count those in current path
+                completed_lessons = len([l for l in st.session_state.completed_modules if l in current_lesson_ids])
+                total_lessons = len(current_lesson_ids)
+                
+                # Completed modules: a module is done when ALL its lessons are completed
+                completed_modules_count = 0
+                for mid, minfo in modules.items():
+                    lesson_ids = [f"{mid}_lesson_{i}" for i in range(1, len(minfo['sources']) + 1)]
+                    if all(lid in st.session_state.completed_modules for lid in lesson_ids):
+                        completed_modules_count += 1
+                total_modules_count = len(modules)
                 
                 with col1:
-                    total_modules_count = len(modules)
-                    st.metric("Modules Completed", f"{len([m for m in st.session_state.completed_modules if 'Module' in m])}/{total_modules_count}")
+                    st.metric("Modules Completed", f"{completed_modules_count}/{total_modules_count}")
                 
                 with col2:
                     st.metric("Lessons Completed", f"{completed_lessons}/{total_lessons}")
@@ -691,6 +833,16 @@ def main():
                             # Individual lessons (sources)
                             for idx, (_, source) in enumerate(module_info['sources'].iterrows(), 1):
                                 lesson_id = f"{module_id}_lesson_{idx}"
+                                # Auto-complete when Study + Quiz both done (no manual Complete button)
+                                study_done = f"study_result_{lesson_id}" in st.session_state
+                                quiz_done = st.session_state.get(f"quiz_passed_{lesson_id}", False)
+                                if study_done and quiz_done and lesson_id not in st.session_state.completed_modules:
+                                    st.session_state.completed_modules.add(lesson_id)
+                                    # Mark module complete when all its lessons are done
+                                    lesson_ids_in_module = [f"{module_id}_lesson_{i}" for i in range(1, len(module_info['sources']) + 1)]
+                                    if all(lid in st.session_state.completed_modules for lid in lesson_ids_in_module):
+                                        st.session_state.completed_modules.add(module_id)
+                                    st.rerun()
                                 is_lesson_completed = lesson_id in st.session_state.completed_modules
                                 
                                 # Lesson card with completion status
@@ -714,7 +866,8 @@ def main():
                                 with col2:
                                     if st.button("💡 Study", key=f"study_{lesson_id}"):
                                         # Store study result in session state
-                                        study_question = f"Create a comprehensive study guide for: {source['Title']}"
+                                        study_question = f"""Create a comprehensive study guide for: {source['Title']}
+Do NOT add inline citations (e.g. "Source: [1]..." or "(Source: Morton et al.)") after each learning point—the user is already studying this specific paper. Present learning points and key takeaways cleanly. You may list sources at the end only."""
                                         with st.spinner("Generating study content..."):
                                             try:
                                                 study_result = st.session_state.rag_system.query(study_question)
@@ -730,47 +883,155 @@ def main():
                                 
                                 with col3:
                                     if st.button("🧠 Quiz", key=f"quiz_{lesson_id}"):
-                                        # Store quiz result in session state
-                                        quiz_question = f"Create 3 quiz questions to test understanding of: {source['Title']}"
+                                        quiz_prompts = [
+                                            f"""Create 3 multiple choice quiz questions about: {source['Title']}. Use ONLY the knowledge base. Return ONLY this exact JSON format, no other text:
+[{{"question": "First question?", "options": ["Choice A", "Choice B", "Choice C"], "correct_index": 0}}, {{"question": "Second?", "options": ["A", "B", "C"], "correct_index": 1}}, {{"question": "Third?", "options": ["X", "Y", "Z"], "correct_index": 2}}]
+correct_index is 0 for first option, 1 for second, etc.""",
+                                            f"""Write 3 quiz questions about {source['Title']} in this exact format:
+1. Question one? a) Option A b) Option B c) Option C. Answer: a
+2. Question two? a) X b) Y c) Z. Answer: b
+3. Question three? a) P b) Q c) R. Answer: c"""
+                                        ]
                                         with st.spinner("Generating quiz..."):
                                             try:
-                                                quiz_result = st.session_state.rag_system.query(quiz_question)
-                                                if "error" not in quiz_result:
-                                                    st.session_state[f"quiz_result_{lesson_id}"] = quiz_result['answer']
+                                                parsed = None
+                                                for prompt in quiz_prompts:
+                                                    quiz_result = st.session_state.rag_system.query(prompt)
+                                                    if "error" not in quiz_result:
+                                                        parsed = _parse_quiz_json(quiz_result['answer'])
+                                                        if parsed:
+                                                            break
+                                                if parsed:
+                                                    st.session_state[f"quiz_questions_{lesson_id}"] = parsed
+                                                    st.session_state[f"quiz_state_{lesson_id}"] = {"current": 0, "answers": {}, "submitted": False}
+                                                    st.session_state[f"quiz_sources_{lesson_id}"] = quiz_result.get("sources", [])
+                                                    if f"quiz_passed_{lesson_id}" in st.session_state:
+                                                        del st.session_state[f"quiz_passed_{lesson_id}"]
+                                                    if f"quiz_error_{lesson_id}" in st.session_state:
+                                                        del st.session_state[f"quiz_error_{lesson_id}"]
+                                                    st.session_state[f"study_toggle_{lesson_id}"] = False  # hide study guide during quiz
                                                     st.rerun()
                                                 else:
-                                                    st.session_state[f"quiz_result_{lesson_id}"] = f"❌ Error generating quiz: {quiz_result['error']}"
+                                                    st.session_state[f"quiz_error_{lesson_id}"] = "Could not parse quiz format. Please try again."
                                                     st.rerun()
                                             except Exception as e:
-                                                st.session_state[f"quiz_result_{lesson_id}"] = f"❌ Error: {str(e)}. Please try again."
+                                                st.session_state[f"quiz_error_{lesson_id}"] = str(e)
                                                 st.rerun()
                                 
                                 with col4:
-                                    if not is_lesson_completed:
-                                        if st.button("✅ Complete", key=f"complete_{lesson_id}"):
-                                            st.session_state.completed_modules.add(lesson_id)
-                                            st.session_state.completed_modules.add(module_id)
-                                            st.success(f"✅ Lesson {idx} completed!")
-                                            st.rerun()
-                                    else:
+                                    if is_lesson_completed:
                                         st.success("✅ Completed")
+                                    elif study_done and not quiz_done:
+                                        st.caption("Complete Quiz to finish")
+                                    elif quiz_done and not study_done:
+                                        st.caption("Complete Study to finish")
+                                    else:
+                                        st.caption("Study + Quiz to complete")
                                 
-                                # Display study/quiz results in full-width boxes below buttons
-                                if f"study_result_{lesson_id}" in st.session_state:
-                                    st.markdown("**📚 Study Guide:**")
-                                    st.markdown(f"""
-                                    <div style="background-color: #e3f2fd; padding: 20px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #2196f3; width: 100%;">
-                                        {st.session_state[f"study_result_{lesson_id}"]}
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                                # Display study result with toggle (can't use expander - already inside module expander)
+                                # Hide Study Guide during quiz (before submit) - only show references once after Submitting
+                                quiz_active_not_submitted = (
+                                    f"quiz_questions_{lesson_id}" in st.session_state and
+                                    not st.session_state.get(f"quiz_state_{lesson_id}", {}).get("submitted", False)
+                                )
+                                if f"study_result_{lesson_id}" in st.session_state and not quiz_active_not_submitted:
+                                    show_study = st.toggle("📚 Study Guide — toggle to show/hide", value=st.session_state.get(f"study_toggle_{lesson_id}", True), key=f"study_toggle_{lesson_id}")
+                                    if show_study:
+                                        st.markdown(f"""
+                                        <div style="background-color: #e3f2fd; padding: 20px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #2196f3;">
+                                            {st.session_state[f"study_result_{lesson_id}"]}
+                                        </div>
+                                        """, unsafe_allow_html=True)
                                 
-                                if f"quiz_result_{lesson_id}" in st.session_state:
-                                    st.markdown("**🧠 Knowledge Check:**")
-                                    st.markdown(f"""
-                                    <div style="background-color: #fff3cd; padding: 20px; border-radius: 10px; margin: 10px 0; border-left: 4px solid #ffc107; width: 100%;">
-                                        {st.session_state[f"quiz_result_{lesson_id}"]}
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                                # Quiz: one-by-one questions with options, 70% to pass
+                                if f"quiz_questions_{lesson_id}" in st.session_state:
+                                    questions = st.session_state[f"quiz_questions_{lesson_id}"]
+                                    state_key = f"quiz_state_{lesson_id}"
+                                    if state_key not in st.session_state:
+                                        st.session_state[state_key] = {"current": 0, "answers": {}, "submitted": False}
+                                    qs = st.session_state[state_key]
+                                    submitted = qs.get("submitted", False)
+                                    
+                                    if submitted:
+                                        correct = sum(1 for i, q in enumerate(questions) if qs.get("answers", {}).get(i) == q["correct_index"])
+                                        total = len(questions)
+                                        passed = correct >= (2 * total) // 3 if total >= 2 else correct >= 1  # 2/3 to pass
+                                        if passed:
+                                            st.session_state[f"quiz_passed_{lesson_id}"] = True
+                                        show_result = st.toggle(f"🧠 Quiz Result — {correct}/{total} — {'✅ Passed (2/3 required)' if passed else '❌ Retake (need 2/3)'}", value=True, key=f"quiz_result_toggle_{lesson_id}")
+                                        if show_result:
+                                            st.metric("Score", f"{correct}/{total} correct")
+                                            if not passed:
+                                                st.info("You need at least 2 out of 3 correct to pass. Click Quiz again to retry.")
+                                            for i, q in enumerate(questions):
+                                                ans = qs.get("answers", {}).get(i)
+                                                right = q["correct_index"]
+                                                got_right = ans == right
+                                                st.markdown(f"**Q{i+1}:** {q.get('question', '') or 'Question'}")
+                                                for j, opt in enumerate(q.get("options", []) or []):
+                                                    if j == right:
+                                                        mark = " ✅"
+                                                    elif j == ans and ans is not None:
+                                                        mark = " ❌"  # wrong option user selected
+                                                    else:
+                                                        mark = ""
+                                                    st.markdown(f"  {['A','B','C','D'][j] if j < 4 else j+1}) {opt}{mark}")
+                                                st.markdown("")
+                                            # Show sources once, only after submitting
+                                            quiz_sources = st.session_state.get(f"quiz_sources_{lesson_id}", [])
+                                            if quiz_sources:
+                                                st.markdown("**📚 Sources referenced:**")
+                                                for j, src in enumerate(quiz_sources, 1):
+                                                    url = src.get("url") or ""
+                                                    title = src.get("title", "Source")
+                                                    if url:
+                                                        st.markdown(f"{j}. **{title}** | [{url}]({url})")
+                                                    else:
+                                                        st.markdown(f"{j}. **{title}**")
+                                    else:
+                                        idx = qs.get("current", 0)
+                                        q = questions[idx]
+                                        opts = q.get("options", []) or []
+                                        q_text = q.get('question', '') or 'Question'
+                                        with st.container():
+                                            st.markdown(f"### 🧠 Question {idx+1} of {len(questions)}")
+                                            st.markdown(f"<div style='background:#fff3cd;padding:15px;border-radius:8px;border-left:4px solid #ffc107;margin:10px 0;'><strong>{q_text}</strong></div>", unsafe_allow_html=True)
+                                            if not opts:
+                                                st.warning("No options available for this question.")
+                                            ans_key = f"quiz_ans_{lesson_id}_{idx}"
+                                            choice = st.radio("Select your answer:", opts, key=ans_key, label_visibility="visible") if opts else None
+                                        col_prev, col_next = st.columns(2)
+                                        with col_prev:
+                                            if idx > 0 and st.button("← Previous", key=f"quiz_prev_{lesson_id}"):
+                                                if choice is not None and choice in q["options"]:
+                                                    qs.setdefault("answers", {})[idx] = q["options"].index(choice)
+                                                qs["current"] = idx - 1
+                                                st.rerun()
+                                        with col_next:
+                                            if idx < len(questions) - 1 and st.button("Next →", key=f"quiz_next_{lesson_id}"):
+                                                if choice is not None and choice in q["options"]:
+                                                    qs.setdefault("answers", {})[idx] = q["options"].index(choice)
+                                                qs["current"] = idx + 1
+                                                st.rerun()
+                                        if idx == len(questions) - 1:
+                                            if st.button("Submit Quiz", key=f"quiz_submit_{lesson_id}", type="primary"):
+                                                # Keep answers saved from Next button (0, 1...) - only current radio is rendered
+                                                answers = dict(qs.get("answers", {}))
+                                                # Add current (last) question from the visible radio
+                                                curr_idx = len(questions) - 1
+                                                rk = f"quiz_ans_{lesson_id}_{curr_idx}"
+                                                if choice is not None and choice in questions[curr_idx].get("options", []):
+                                                    answers[curr_idx] = questions[curr_idx]["options"].index(choice)
+                                                elif rk in st.session_state:
+                                                    val = st.session_state[rk]
+                                                    if val in questions[curr_idx].get("options", []):
+                                                        answers[curr_idx] = questions[curr_idx]["options"].index(val)
+                                                qs["answers"] = answers
+                                                qs["submitted"] = True
+                                                st.rerun()
+                                
+                                if f"quiz_error_{lesson_id}" in st.session_state:
+                                    st.error(st.session_state[f"quiz_error_{lesson_id}"])
                                 
                                 st.markdown("---")
                 
@@ -837,7 +1098,7 @@ def main():
             st.info("👈 Loading learning corpus...")
         
     
-    with tab2:
+    elif st.session_state.active_tab == "ask_coach":
         st.markdown('<h2 class="sub-header">Ask FitScience Coach</h2>', unsafe_allow_html=True)
         st.markdown("Ask questions about training, nutrition, supplements, or health. Get evidence-based answers with citations.")
         
@@ -870,28 +1131,25 @@ def main():
                 # Display answer with green styling
                 st.markdown("**💡 Answer:**")
                 clean_answer = result['answer'].replace('</div>', '').replace('<div>', '').strip()
+                # Remove sources section from answer box—they are shown separately below
+                clean_answer = re.sub(r'(?:^|\n)\s*(?:Sources?|References?)\s*:\s*.*', '', clean_answer, flags=re.IGNORECASE | re.DOTALL)
+                clean_answer = clean_answer.strip()
+                clean_answer = clean_answer.replace('\n', '<br>')
                 st.markdown(f"""
                 <div style="background-color: #e8f5e8; padding: 15px; border-radius: 10px; border-left: 4px solid #28a745; margin: 10px 0;">
                     {clean_answer}
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Display sources
+                # Display sources line by line
                 if result['sources']:
                     st.markdown("**📚 Sources:**")
                     for i, source in enumerate(result['sources'], 1):
-                        with st.expander(f"{i}. {source['title']}"):
-                            col1, col2 = st.columns([2, 1])
-                            with col1:
-                                st.markdown(f"**Type:** {source['type']}")
-                                st.markdown(f"**Relevance:** {source['relevance']}")
-                                if source['url']:
-                                    st.markdown(f"**URL:** {source['url']}")
-                            with col2:
-                                if source['url']:
-                                    st.link_button("🔗 Open Source", source['url'])
-                            st.markdown("**Preview:**")
-                            st.markdown(source['content_preview'])
+                        url = source.get('url') or ''
+                        if url:
+                            st.markdown(f"{i}. **{source['title']}** | [{url}]({url})")
+                        else:
+                            st.markdown(f"{i}. **{source['title']}**")
                 
                 # Save to history
                 st.session_state.query_history.append({
@@ -925,7 +1183,7 @@ def main():
         
         
     
-    with tab3:
+    elif st.session_state.active_tab == "bmr":
         st.markdown('<h2 class="sub-header">🧮 BMR & NEAT Calculator</h2>', unsafe_allow_html=True)
         st.markdown("Calculate your Basal Metabolic Rate (BMR) and Total Daily Energy Expenditure (TDEE) with activity levels.")
         
@@ -1043,10 +1301,8 @@ def main():
                     inches = st.session_state.bmr_height_in_input
                     height = (feet * 12 + inches) * 2.54
                 
-                # Calculate BMR
-                bmr = st.session_state.rag_system.calculate_bmr(weight, height, age, gender)
-                
-                # Calculate TDEE for selected activity level
+                # Calculate BMR and TDEE (all calories as integers)
+                bmr = int(round(st.session_state.rag_system.calculate_bmr(weight, height, age, gender)))
                 activity_map = {
                     "Sedentary": "sedentary",
                     "Lightly Active": "lightly_active", 
@@ -1054,16 +1310,8 @@ def main():
                     "Very Active": "very_active",
                     "Extremely Active": "extremely_active"
                 }
-                
-                tdee = st.session_state.rag_system.calculate_tdee(bmr, activity_map[activity_level])
-                
-                # NEAT estimation
-                neat_calories = {
-                    "Low": 300,
-                    "Moderate": 500,
-                    "High": 750
-                }
-                
+                tdee = int(round(st.session_state.rag_system.calculate_tdee(bmr, activity_map[activity_level])))
+                neat_calories = {"Low": 300, "Moderate": 500, "High": 750}
                 total_daily = tdee + neat_calories[neat_level]
                 
                 # Display results
@@ -1087,9 +1335,10 @@ def main():
                 # Detailed breakdown
                 st.markdown("### 📋 Detailed Breakdown")
                 
+                exercise_cal = tdee - bmr
                 breakdown_data = {
                     "Component": ["BMR (Base)", "Exercise Activity", "NEAT", "**Total Daily**"],
-                    "Calories": [f"{bmr}", f"{tdee - bmr}", f"+{neat_calories[neat_level]}", f"**{total_daily}**"],
+                    "Calories": [str(bmr), str(exercise_cal), f"+{neat_calories[neat_level]}", f"**{total_daily}**"],
                     "Percentage": [
                         f"{round((bmr/total_daily)*100, 1)}%",
                         f"{round(((tdee-bmr)/total_daily)*100, 1)}%", 
@@ -1107,8 +1356,8 @@ def main():
                 
                 with col1:
                     st.markdown("**💪 Muscle Gain**")
-                    muscle_cal = total_daily + 300
-                    st.metric("Target Calories", f"{muscle_cal} cal/day")
+                    muscle_cal = total_daily + 300  # already int
+                    st.metric("Target Calories", f"{int(muscle_cal)} cal/day")
                     st.info("+300-500 cal surplus for lean gains")
                 
                 with col2:
@@ -1118,8 +1367,8 @@ def main():
                 
                 with col3:
                     st.markdown("**🔥 Fat Loss**")
-                    fat_cal = total_daily - 500
-                    st.metric("Target Calories", f"{fat_cal} cal/day")
+                    fat_cal = total_daily - 500  # already int
+                    st.metric("Target Calories", f"{int(fat_cal)} cal/day")
                     st.info("-300-500 cal deficit for sustainable loss")
                 
                 # Activity level comparison
@@ -1127,7 +1376,7 @@ def main():
                 
                 activity_comparison = []
                 for act_level, act_key in activity_map.items():
-                    act_tdee = st.session_state.rag_system.calculate_tdee(bmr, act_key)
+                    act_tdee = int(round(st.session_state.rag_system.calculate_tdee(bmr, act_key)))
                     activity_comparison.append({
                         "Activity Level": act_level,
                         "TDEE": f"{act_tdee} cal/day",
@@ -1176,7 +1425,7 @@ def main():
                         st.write(f"• Total: {calc['results']['total']} cal/day")
 
     
-    with tab4:
+    else:  # history
         st.markdown('<h2 class="sub-header">📝 Query History</h2>', unsafe_allow_html=True)
         
         if st.session_state.query_history:
