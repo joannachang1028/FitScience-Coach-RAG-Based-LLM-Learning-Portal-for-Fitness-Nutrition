@@ -1,6 +1,8 @@
 # FitScience Coach - Personal Learning Portal
 
-An evidence-based fitness and nutrition learning portal powered by RAG (Retrieval-Augmented Generation) technology.
+Most fitness apps give advice. FitScience Coach shows you why.
+This project explores how large language models can be safely applied in health education by forcing every answer to come from real research—no guesswork, no vibes.
+By combining semantic search, citation-aware generation, and rigorous evaluation, the system demonstrates how AI can make evidence-based knowledge accessible without sacrificing accuracy.
 
 ## 🎯 Project Overview
 
@@ -9,6 +11,12 @@ An evidence-based fitness and nutrition learning portal powered by RAG (Retrieva
 - Curated learning corpus from academic papers, guidelines, and expert podcasts
 - Progress tracking and personalized recommendations
 - Modular learning paths covering training, nutrition, and health
+
+## 🎬 Demo
+
+https://github.com/user-attachments/assets/REPLACE-WITH-YOUR-VIDEO-ID
+
+> 💡 **鑲嵌影片設定**：到 repo 開新 issue → 拖入 `FitScience Coach.mov` → 複製產生的連結（`https://github.com/user-attachments/assets/...`）→ 替換上面整行網址
 
 ## 📚 Learning Objectives
 
