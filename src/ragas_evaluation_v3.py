@@ -83,7 +83,11 @@ def create_evaluation_dataset():
 def get_rag_responses(evaluation_data):
     print("🚀 Initializing FitScience Coach RAG System for evaluation…")
     print("🔑 Using OpenAI API key for improved faithfulness")
-    rag = FitScienceRAG(use_llama=True, openai_api_key=OPENAI_API_KEY)
+    rag = FitScienceRAG(
+        use_groq=True,
+        openai_api_key=OPENAI_API_KEY if OPENAI_API_KEY != "your-openai-api-key-here" else None,
+        groq_api_key=os.environ.get("GROQ_API_KEY", "")
+    )
     rag.initialize_system()
     results = []
     for i, q in enumerate(evaluation_data, 1):

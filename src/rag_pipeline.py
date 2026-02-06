@@ -4,6 +4,8 @@ Personal Learning Portal for Evidence-Based Fitness & Nutrition
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any
@@ -26,19 +28,28 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+# Groq imports (free tier - no local install needed)
+try:
+    from langchain_groq import ChatGroq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
 # Streamlit for demo
 import streamlit as st
 
 class FitScienceRAG:
-    def __init__(self, use_llama: bool = True, openai_api_key: str = None):
+    def __init__(self, use_groq: bool = True, openai_api_key: str = None, groq_api_key: str = None):
         """Initialize the RAG system for FitScience Coach
         
         Args:
-            use_llama: If True, use Llama 3.2 1B via Ollama (free, local)
+            use_groq: If True, use Groq Llama (free cloud API - no local install)
             openai_api_key: Optional OpenAI API key for GPT-4o-mini (better faithfulness)
+            groq_api_key: Groq API key for free Llama (get at console.groq.com)
         """
-        self.use_llama = use_llama
+        self.use_groq = use_groq
         self.openai_api_key = openai_api_key
+        self.groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY", "")
         
         # Initialize components
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -55,8 +66,9 @@ class FitScienceRAG:
         self.vectorstore = None
         self.qa_chain = None
         self.corpus_metadata = []
-        self.llm = None
+        self.llm = None  # "openai" | "groq" | None
         self.openai_llm = None
+        self.groq_llm = None
         
     def load_corpus_from_csv(self, csv_path: str = "data/learning_corpus.csv"):
         """Load learning corpus from CSV file"""
@@ -289,30 +301,15 @@ class FitScienceRAG:
             return False
 
         try:
-            # Initialize Ollama connection
-            if self.use_llama:
-                print("🦙 Checking Ollama connection...")
-                try:
-                    # Test Ollama connection
-                    response = requests.get("http://localhost:11434/api/tags", timeout=3)
-                    if response.status_code == 200:
-                        models = response.json().get('models', [])
-                        llama_model = any('llama3.2:1b' in model.get('name', '') for model in models)
-                        
-                        if llama_model:
-                            self.llm = "ollama"  # Flag for Ollama usage
-                            print("✅ Llama 3.2 1B via Ollama ready")
-                        else:
-                            print("⚠️ Llama 3.2 1B not found - will use corpus-only mode")
-                            self.llm = None
-                    else:
-                        print("⚠️ Ollama not responding - will use corpus-only mode")
-                        self.llm = None
-                except requests.exceptions.RequestException:
-                    print("⚠️ Ollama not available - will use corpus-only mode")
-                    self.llm = None
+            # Initialize Groq (free cloud API - no local install)
+            if self.use_groq and GROQ_AVAILABLE and self.groq_api_key:
+                self.llm = "groq"
+                print("✅ Groq Llama ready (free cloud API)")
+            elif self.use_groq and not self.groq_api_key:
+                print("⚠️ GROQ_API_KEY not set - add to .env or set in sidebar. Using corpus-only mode.")
+                self.llm = None
             else:
-                print("⚠️ Ollama disabled. Using corpus-only mode.")
+                print("⚠️ Groq disabled. Using corpus-only mode.")
                 self.llm = None
 
             # Keep retriever available with adaptive retrieval
@@ -389,10 +386,18 @@ Answer (using ONLY the explicit information from the sources above):"""
         except Exception as e:
             return f"OpenAI generation error: {e}"
     
-    def generate_ollama_response(self, context: str, question: str, docs=None) -> str:
-        """Generate response using Llama 3.2 1B via Ollama with high faithfulness"""
+    def generate_groq_response(self, context: str, question: str, docs=None) -> str:
+        """Generate response using Groq Llama (free cloud API) with high faithfulness"""
         try:
-            # Format prompt for Llama 3.2 - STRICT grounding to provided sources
+            if not self.groq_llm:
+                if not GROQ_AVAILABLE or not self.groq_api_key:
+                    raise Exception("Groq not available or API key not provided")
+                self.groq_llm = ChatGroq(
+                    model="llama-3.1-8b-instant",
+                    temperature=0.0,
+                    api_key=self.groq_api_key
+                )
+            
             prompt = f"""You are FitScience Coach, a fitness and nutrition expert. You MUST answer ONLY using the research sources provided below. Do NOT add information from general knowledge.
 
 Research Sources from Knowledge Base:
@@ -410,40 +415,11 @@ CRITICAL INSTRUCTIONS:
 
 Answer (using ONLY the information from the sources above):"""
             
-            # Call Ollama API with conservative settings for faithfulness
-            payload = {
-                "model": "llama3.2:1b",
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Much lower for conservative, faithful responses
-                    "top_p": 0.7,        # More focused sampling
-                    "top_k": 20,         # Limit vocabulary diversity
-                    "repeat_penalty": 1.1,
-                    "max_tokens": 512
-                }
-            }
+            response = self.groq_llm.invoke(prompt)
+            return response.content.strip() if hasattr(response, 'content') else str(response)
             
-            response = requests.post(
-                "http://localhost:11434/api/generate",
-                json=payload,
-                timeout=60
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get('response', 'No response generated').strip()
-            else:
-                return f"Ollama API error: {response.status_code} - {response.text}"
-            
-        except requests.exceptions.Timeout as e:
-            return f"Ollama request timed out after 60 seconds. Please try again."
-        except requests.exceptions.ConnectionError as e:
-            return f"Could not connect to Ollama. Please ensure Ollama is running: {e}"
-        except requests.exceptions.RequestException as e:
-            return f"Error connecting to Ollama: {e}"
         except Exception as e:
-            return f"Error generating Ollama response: {e}"
+            return f"Groq API error: {e}"
     
     def query(self, question: str) -> Dict[str, Any]:
         """Query the RAG system with LLM answer and explicit source links"""
@@ -500,7 +476,7 @@ Answer (using ONLY the information from the sources above):"""
             return {"error": f"Query failed: {e}"}
     
     def _generate_llm_answer(self, context_text: str, question: str, docs) -> str:
-        """Generate answer using LLM with corpus context - OpenAI preferred for faithfulness"""
+        """Generate answer using LLM with corpus context - OpenAI preferred, Groq as free option"""
         
         # Priority 1: Try OpenAI GPT-4o-mini (best faithfulness)
         if self.openai_api_key and OPENAI_AVAILABLE:
@@ -508,37 +484,26 @@ Answer (using ONLY the information from the sources above):"""
                 print("🤖 Using OpenAI GPT-4o-mini for high-faithfulness response...")
                 return self.generate_openai_response(context_text, question, docs)
             except Exception as e:
-                print(f"⚠️ OpenAI failed: {e}, falling back to Ollama...")
+                print(f"⚠️ OpenAI failed: {e}, falling back to Groq...")
         
-        # Priority 2: Try Ollama Llama (free local option)
-        if self.llm == "ollama":
+        # Priority 2: Try Groq Llama (free cloud API - no local install)
+        if self.llm == "groq":
             try:
-                return self.generate_ollama_response(context_text, question, docs)
+                print("🦙 Using Groq Llama (free cloud API)...")
+                return self.generate_groq_response(context_text, question, docs)
             except Exception as e:
-                print(f"⚠️ Ollama failed, falling back to corpus-only response: {e}")
+                print(f"⚠️ Groq failed, falling back to corpus-only response: {e}")
                 return self._create_corpus_fallback_response(docs, question)
         else:
-            # Try to connect to Ollama
-            if self.use_llama:
-                print("🦙 Attempting to connect to Ollama...")
+            # Try Groq if we have key but wasn't set at init
+            if self.use_groq and self.groq_api_key and GROQ_AVAILABLE:
+                print("🦙 Groq API key found, generating answer...")
+                self.llm = "groq"
                 try:
-                    response = requests.get("http://localhost:11434/api/tags", timeout=3)
-                    if response.status_code == 200:
-                        models = response.json().get('models', [])
-                        llama_model = any('llama3.2:1b' in model.get('name', '') for model in models)
-                        
-                        if llama_model:
-                            print("✅ Ollama connected! Generating answer...")
-                            self.llm = "ollama"
-                            try:
-                                return self.generate_ollama_response(context_text, question, docs)
-                            except Exception as e:
-                                print(f"⚠️ Ollama failed after connection, falling back to corpus-only response: {e}")
-                                return self._create_corpus_fallback_response(docs, question)
+                    return self.generate_groq_response(context_text, question, docs)
                 except Exception as e:
-                    print(f"⚠️ Could not connect to Ollama: {e}")
+                    print(f"⚠️ Groq failed: {e}")
             
-            # If no LLM available, show helpful message
             return self._no_llm_message(docs)
     
     
@@ -566,22 +531,19 @@ Answer (using ONLY the information from the sources above):"""
 
     def _no_llm_message(self, docs) -> str:
         """Show helpful message when no LLM is available"""
+        groq_help = (
+            "**To get free AI-powered answers:**\n"
+            "• Get a free API key at [console.groq.com](https://console.groq.com)\n"
+            "• Add `GROQ_API_KEY=your-key` to `.env` or paste in sidebar\n"
+            "• Click 'Apply Settings'"
+        )
         if not docs:
-            return ("I need Ollama with Llama 3.2 1B to provide comprehensive answers. Please:\n\n"
-                   "**Setup Instructions:**\n"
-                   "• Install: `curl -fsSL https://ollama.com/install.sh | sh`\n"
-                   "• Pull model: `ollama pull llama3.2:1b`\n"
-                   "• Start: `ollama serve`\n"
-                   "• Click 'Apply Settings' in the sidebar")
+            return f"I need a Groq API key to provide comprehensive answers. {groq_help}"
         
-        return ("I found relevant sources in my knowledge base, but I need Ollama with Llama 3.2 1B to provide comprehensive answers.\n\n"
-               "**To get AI-powered answers:**\n"
-               "• Install Ollama: `curl -fsSL https://ollama.com/install.sh | sh`\n"
-               "• Pull model: `ollama pull llama3.2:1b`\n"
-               "• Start Ollama: `ollama serve`\n"
-               "• Click 'Apply Settings' in the sidebar\n\n"
-               "**Sources found in my knowledge base:**\n" +
-               "\n".join([f"• {d.metadata.get('source', 'Unknown')}" for d in docs[:3]]))
+        return ("I found relevant sources in my knowledge base, but I need a Groq API key for AI answers.\n\n"
+                + groq_help + "\n\n"
+                "**Sources found in my knowledge base:**\n" +
+                "\n".join([f"• {d.metadata.get('source', 'Unknown')}" for d in docs[:3]]))
     
     def _simple_corpus_response(self, docs, question):
         """Faithful corpus-only response - NO hallucination, ONLY source content"""

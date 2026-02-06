@@ -3,12 +3,15 @@ FitScience Coach - Streamlit Interface
 Personal Learning Portal for Evidence-Based Fitness & Nutrition
 """
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
 import pandas as pd
 from rag_pipeline import FitScienceRAG
 import json
 from datetime import datetime
-import os
 
 # Page config
 st.set_page_config(
@@ -68,8 +71,10 @@ if 'query_history' not in st.session_state:
     st.session_state.query_history = []
 if 'openai_api_key' not in st.session_state:
     st.session_state.openai_api_key = os.getenv("OPENAI_API_KEY", "")
-if 'use_llama' not in st.session_state:
-    st.session_state.use_llama = False
+if 'groq_api_key' not in st.session_state:
+    st.session_state.groq_api_key = os.getenv("GROQ_API_KEY", "")
+if 'use_groq' not in st.session_state:
+    st.session_state.use_groq = True
 if 'current_question' not in st.session_state:
     st.session_state.current_question = ""
 if 'auto_trigger' not in st.session_state:
@@ -129,7 +134,11 @@ def initialize_rag_system():
     """Initialize the RAG system"""
     if st.session_state.rag_system is None:
         with st.spinner("🚀 Initializing FitScience Coach..."):
-            rag = FitScienceRAG(use_llama=st.session_state.use_llama)
+            rag = FitScienceRAG(
+                use_groq=st.session_state.use_groq,
+                openai_api_key=st.session_state.openai_api_key or None,
+                groq_api_key=st.session_state.groq_api_key or None
+            )
             if rag.initialize_system():
                 st.session_state.rag_system = rag
                 st.success("✅ System ready!")
@@ -439,30 +448,13 @@ def main():
             
             st.markdown("---")
         
-        # LLM Settings
+        # LLM Settings - API key from .env, no user input needed
         st.subheader("🔑 LLM Settings")
-        
-        # LLM Settings - Only Llama 3.2 1B via Ollama (free & local)
-        st.info("🦙 Using Llama 3.2 1B via Ollama (local & free)")
-        st.markdown("**Setup Instructions:** Please click 'Apply Settings' to apply the settings.")
-        st.code("""
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull Llama 3.2 1B model
-ollama pull llama3.2:1b
-
-# Start Ollama service
-ollama serve
-        """, language="bash")
-        
-        use_llama = True
-        st.session_state.openai_api_key = ""  # Clear any OpenAI key
-        
-        if st.button("Apply Settings"):
-            st.session_state.rag_system = None  # force re-init
-            st.session_state.use_llama = use_llama
-            st.rerun()
+        if st.session_state.groq_api_key:
+            st.success("🦙 Groq Llama ready — AI answers enabled")
+        else:
+            st.warning("Add GROQ_API_KEY to .env to enable AI answers")
+        st.session_state.use_groq = True
         
         if st.session_state.corpus_data is not None:
             # Corpus statistics
