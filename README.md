@@ -14,9 +14,8 @@ By combining semantic search, citation-aware generation, and rigorous evaluation
 
 ## 🎬 Demo
 
-https://github.com/user-attachments/assets/REPLACE-WITH-YOUR-VIDEO-ID
+https://github.com/user-attachments/assets/866f51be-c0ed-4005-a195-36bdfff0ea09
 
-> 💡 **鑲嵌影片設定**：到 repo 開新 issue → 拖入 `FitScience Coach.mov` → 複製產生的連結（`https://github.com/user-attachments/assets/...`）→ 替換上面整行網址
 
 ## 📚 Learning Objectives
 
