@@ -44,7 +44,7 @@ An evidence-based fitness and nutrition learning portal powered by RAG (Retrieva
         ┌───────────┐  ┌───────────┐  ┌───────────┐
         │  VECTOR   │  │   LLM     │  │  CORPUS   │
         │   STORE   │  │  ENGINE   │  │   DATA    │
-        │  (FAISS)  │  │(GPT/Llama)│  │ (23 src)  │
+        │  (FAISS)  │  │(GPT/Groq) │  │ (23 src)  │
         └───────────┘  └───────────┘  └───────────┘
 ```
 
@@ -61,7 +61,7 @@ User Query
     ↓
 [4] Context Augmentation
     ↓
-[5] LLM Generation (GPT-4o-mini / Llama 3.2 1B)
+[5] LLM Generation (GPT-4o-mini / Groq Llama)
     ↓
 [6] Citation Processing
     ↓
@@ -108,15 +108,14 @@ User Query
 ┌──────────────────────────────────────────────┐
 │  LLM Generation                              │
 │  ┌────────────────────────────────────────┐  │
-│  │ Primary: OpenAI GPT-4o-mini           │  │
+│  │ Primary: OpenAI GPT-4o-mini (optional)│  │
 │  │ • Temperature: 0.0                    │  │
 │  │ • Strict grounding prompt             │  │
-│  │ • Citation enforcement                │  │
 │  │                                       │  │
-│  │ Fallback: Llama 3.2 1B (Ollama)      │  │
-│  │ • Local deployment                    │  │
-│  │ • Free usage                          │  │
-│  │ • Privacy-preserving                  │  │
+│  │ Default: Groq Llama (free cloud)      │  │
+│  │ • No local install                    │  │
+│  │ • Free tier at console.groq.com       │  │
+│  │ • Configure GROQ_API_KEY in .env      │  │
 │  └────────────────────────────────────────┘  │
 └──────┬───────────────────────────────────────┘
        │
@@ -141,7 +140,7 @@ User Query
 - **Corpus**: 23 evidence-based sources (papers, guidelines, podcasts)
 - **Embeddings**: Sentence Transformers (all-MiniLM-L6-v2, 384 dimensions)
 - **Vector Store**: FAISS for fast similarity search
-- **LLM**: Hybrid approach - OpenAI GPT-4o-mini (primary) + Llama 3.2 1B (fallback)
+- **LLM**: Groq Llama (default, free) — OpenAI GPT-4o-mini optional for higher faithfulness
 - **Interface**: Streamlit web app with 4 interactive tabs
 
 ### Performance:
@@ -191,7 +190,7 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 - `learning_corpus.csv` - 23 curated sources (Academic Papers, Podcasts, Government Resources)
 
 **💻 `src/`** - Source code (3 files)
-- `rag_pipeline.py` - RAG system with hybrid LLM support (OpenAI GPT-4o-mini + Llama 3.2 1B)
+- `rag_pipeline.py` - RAG system with Groq Llama (default) + optional OpenAI GPT-4o-mini
 - `streamlit_app.py` - Interactive web interface with 4 tabs (Courses, Ask Coach, BMR Calculator, Query History)
 - `ragas_evaluation_v3.py` - Automated RAGAs evaluation script
 
@@ -219,10 +218,12 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 pip install -r requirements.txt
 ```
 
-### 2. Set Environment Variables (Optional)
-```bash
-export OPENAI_API_KEY="your-api-key-here"
+### 2. Configure API Key (host only)
+Create a `.env` file with your Groq API key (free at [console.groq.com](https://console.groq.com)):
 ```
+GROQ_API_KEY=gsk_your-key-here
+```
+Users visiting the app do **not** need to set any API keys — it works out of the box once the host configures `.env`.
 
 ### 3. Run the Streamlit App
 ```bash
@@ -237,10 +238,10 @@ Open your browser to `http://localhost:8501`
 ## 🤖 Core Features
 
 ### 1. Intelligent Q&A System
-**Hybrid LLM Approach**:
-- **OpenAI GPT-4o-mini** (Primary): High-faithfulness responses with temperature 0.0
-- **Llama 3.2 1B via Ollama** (Fallback): Free, local LLM option
-- **Corpus-only mode**: Safe fallback with direct source extraction
+**LLM Approach**:
+- **Groq Llama** (Default): Free cloud API — no OpenAI key or local install needed. Host sets `GROQ_API_KEY` in `.env`; users use the app directly.
+- **OpenAI GPT-4o-mini** (Optional): Add `OPENAI_API_KEY` for higher faithfulness
+- **Corpus-only mode**: Safe fallback with direct source extraction when no LLM is configured
 
 **Key Capabilities**:
 - Evidence-based answers grounded in curated research
@@ -288,7 +289,7 @@ Open your browser to `http://localhost:8501`
 - Return answer with source links and previews
 
 **Faithfulness Optimizations**:
-- Temperature 0.0 (OpenAI) / 0.1 (Llama) for conservative responses
+- Temperature 0.0 (OpenAI / Groq) for conservative responses
 - Strict prompts: "Answer ONLY using information from sources"
 - Top-p 0.7, top-k 20 for focused sampling
 - Explicit source attribution required
@@ -337,10 +338,11 @@ The system uses a curated corpus of 23 evidence-based sources:
 ```python
 from src.rag_pipeline import FitScienceRAG
 
-# Initialize with optional OpenAI key
+# Initialize — Groq from .env (no user API key needed)
 rag = FitScienceRAG(
-    use_llama=True,                    # Enable Ollama fallback
-    openai_api_key="your-key-here"     # Optional for better faithfulness
+    use_groq=True,                     # Default: Groq Llama (free)
+    groq_api_key="gsk_...",            # Or set GROQ_API_KEY in .env
+    openai_api_key="sk-..."            # Optional: for higher faithfulness
 )
 
 # Initialize system
@@ -369,15 +371,15 @@ result = rag.query("How much protein should I eat?")
 - `load_corpus_from_csv()`: Load 23 sources from CSV
 - `create_synthetic_content()`: Generate documents with metadata mapping
 - `build_vectorstore()`: Create FAISS index with HuggingFace embeddings
-- `query()`: Main query interface with hybrid LLM generation
+- `query()`: Main query interface with LLM generation
 - `calculate_bmr()`: Harris-Benedict BMR calculation
 - `calculate_tdee()`: TDEE with activity multipliers
-- `generate_openai_response()`: GPT-4o-mini generation (high faithfulness)
-- `generate_ollama_response()`: Llama 3.2 1B generation (free fallback)
+- `generate_openai_response()`: GPT-4o-mini (optional, high faithfulness)
+- `generate_groq_response()`: Groq Llama (default, free cloud API)
 
 **LLM Priority System**:
-1. **OpenAI GPT-4o-mini** (if API key provided): Best faithfulness
-2. **Ollama Llama 3.2 1B** (if available): Free local option
+1. **OpenAI GPT-4o-mini** (if `OPENAI_API_KEY` set): Best faithfulness
+2. **Groq Llama** (if `GROQ_API_KEY` in .env): Free, no user setup
 3. **Corpus-only fallback**: Direct source extraction
 
 ### Vector Store:
@@ -412,10 +414,7 @@ result = rag.query("How much protein should I eat?")
 
 ### Run Evaluation
 ```bash
-# Set OpenAI API key
-export OPENAI_API_KEY="your-api-key-here"
-
-# Run RAGAs evaluation
+# Set GROQ_API_KEY and optionally OPENAI_API_KEY in .env
 python src/ragas_evaluation_v3.py
 ```
 
