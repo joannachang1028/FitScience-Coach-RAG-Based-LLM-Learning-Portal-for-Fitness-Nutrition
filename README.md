@@ -4,6 +4,13 @@ Most fitness apps give advice. FitScience Coach shows you why.
 This project explores how large language models can be safely applied in health education by forcing every answer to come from real research—no guesswork, no vibes.
 By combining semantic search, citation-aware generation, and rigorous evaluation, the system demonstrates how AI can make evidence-based knowledge accessible without sacrificing accuracy.
 
+> **RAG v2 status (September 2026):** The answer path indexes a local snapshot
+> of section-level open-access evidence, uses hybrid FAISS + BM25 retrieval,
+> requires source labels on generated claims, and records safety/retrieval traces.
+> The prior 0.857 aggregate is a legacy prototype result because it evaluated
+> hand-written contexts, not actual retrieved passages. See
+> [RAG_v2_Implementation_and_Baseline.md](reports/RAG_v2_Implementation_and_Baseline.md).
+
 ## Project Overview
 
 **FitScience Coach** helps users learn evidence-based fitness and nutrition through:
@@ -150,11 +157,12 @@ User Query
 - **LLM**: Groq Llama (default, free) — OpenAI GPT-4o-mini optional for higher faithfulness
 - **Interface**: Streamlit web app with 4 interactive tabs
 
-### Performance:
-- **RAGAs Score**: 0.857 (Excellent) ⭐⭐⭐⭐⭐
-- **Retrieval Metrics**: Perfect 1.0 across all dimensions
-- **Faithfulness**: 0.429 (286% improvement through optimization)
-- **Query Processing**: < 2 seconds average
+### Current evaluation baseline
+
+- **Corpus:** 503 section-level chunks from 10 open-access evidence sources
+- **Evaluation:** 120 versioned draft cases using actual retrieved passages
+- **Offline baseline:** recall@k 0.889, MRR 0.821, safe-abstention accuracy 0.875
+- **Important:** These are engineering regression metrics, not clinical-accuracy claims.
 
 ---
 
@@ -172,7 +180,9 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 ├── src/                                       # 💻 Source code
 │   ├── rag_pipeline.py                        # Core RAG system implementation
 │   ├── streamlit_app.py                       # Streamlit web interface
-│   └── ragas_evaluation_v3.py                 # RAGAs evaluation script
+│   ├── ingest_evidence.py                     # Open-access evidence snapshot builder
+│   ├── build_evaluation_set.py                # 120-case versioned regression set
+│   └── ragas_evaluation_v3.py                 # Actual-context RAGAS/offline evaluator
 │
 ├── diagrams/                                  # 📐 System architecture
 │   └── system_architecture.md                 # Detailed architecture documentation
@@ -185,10 +195,10 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 │   ├── Domain_Learning_Goals.md               # Domain definition & learning objectives (Step 1)
 │   └── PLP_Features_To_Adopt.md               # PLP feature analysis (Step 2)
 │
-└── ragas_results/                             # 📈 RAGAs evaluation results
-    ├── ragas_evaluation_results.json          # Final evaluation score (0.857)
-    ├── ragas_aggregate_results.json           # Aggregated evaluation metrics
-    └── ragas_scores_per_sample.csv            # Per-sample evaluation scores
+└── data/
+    ├── evidence_sources.json                  # Source manifest with DOI and scope
+    ├── evidence_corpus.jsonl                  # Section-level evidence snapshot
+    └── evaluation_cases.jsonl                 # 120 draft regression cases
 ```
 
 ### Directory Organization
@@ -211,8 +221,8 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 - `PLP_Features_To_Adopt.md` - Analyzed PLP features (Step 2)
 - `RAG_Evaluation_and_Improvements.md` - Complete iterative improvement journey (v1.0 → v3.0)
 
-** `ragas_results/`** - Evaluation results (3 files)
-- `ragas_evaluation_results.json` - Final score: 0.857 (Excellent) ⭐⭐⭐⭐⭐
+** `ragas_results/`** - Legacy prototype evaluation artifacts
+- `ragas_evaluation_results.json` - Historical 0.857 aggregate; not valid v2 retrieval evidence
 - `ragas_aggregate_results.json` - Aggregated metrics across all samples
 - `ragas_scores_per_sample.csv` - Detailed per-sample evaluation scores
 
@@ -225,19 +235,25 @@ Application-of-NLX-LLM-Personal-Learning-Portal/
 pip install -r requirements.txt
 ```
 
-### 2. Configure API Key (host only — users do not need to configure anything)
+### 2. Build or refresh the evidence snapshot
+~~~bash
+python src/ingest_evidence.py
+python src/build_evaluation_set.py
+~~~
+
+### 3. Configure API Key (host only — users do not need to configure anything)
 **Host only:** Create a `.env` file with your Groq API key (free at [console.groq.com](https://console.groq.com)):
 ```
 GROQ_API_KEY=gsk_your-key-here
 ```
 **Users:** No API key configuration required. Once the host has set up `.env`, users simply open the app and start learning—no sign-up, keys, or setup.
 
-### 3. Run the Streamlit App
+### 4. Run the Streamlit App
 ```bash
 streamlit run src/streamlit_app.py
 ```
 
-### 4. Access the Interface
+### 5. Access the Interface
 Open your browser to `http://localhost:8501`
 
 ---
@@ -400,25 +416,25 @@ result = rag.query("How much protein should I eat?")
 
 ## Evaluation & Performance
 
-### RAGAs Automated Evaluation
+### Actual-context evaluation
 
-**Final Score: 0.857 / 1.0 (Excellent) ⭐⭐⭐⭐⭐**
+Run the evaluator with --offline for retrieval, routing, citation-contract, and
+latency checks. Set OPENAI_API_KEY and omit --offline to add RAGAS judging against
+the contexts retrieved at runtime.
 
-| Metric | Score | Status |
-|--------|-------|--------|
-| Context Precision | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
-| Context Recall | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
-| Context Relevance | 1.000 | ⭐⭐⭐⭐⭐ Perfect |
-| Faithfulness | 0.429 | ⭐⭐⭐⭐ Good |
-| **Overall** | **0.857** | ⭐⭐⭐⭐⭐ **Excellent** |
+The former 0.857 aggregate must not be used as current performance evidence.
+See [RAG_v2_Implementation_and_Baseline.md](reports/RAG_v2_Implementation_and_Baseline.md)
+for the reproducible baseline and limitations.
 
-### Iterative Improvement Journey
+### Historical prototype journey
 
 1. **v1.0** (Llama 3.2 1B): 0.779 - Good baseline, perfect retrieval
 2. **v2.0** (Optimized Llama): 0.778 - Optimization attempts showed model limitations
 3. **v3.0** (OpenAI GPT-4o-mini): **0.857** - 286% faithfulness improvement
 
-**Key Learning**: Model selection is critical for faithfulness. Perfect retrieval validates corpus design.
+**Historical lesson:** Model choice affected prototype output, but the old
+evaluation was not coupled to actual retrieved contexts. v2 therefore treats
+corpus quality, retrieval, safety, and evaluation design as separate variables.
 
 ### Run Evaluation
 ```bash

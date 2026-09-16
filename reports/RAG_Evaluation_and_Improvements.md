@@ -1,4 +1,10 @@
 # RAG System Evaluation & Improvements
+
+> **Historical v1 record:** This report describes the synthetic-corpus prototype.
+> Its 0.857 aggregate is not a valid current retrieval result because the
+> evaluator supplied pre-written contexts rather than actual retrieval output.
+> For the source-grounded v2 architecture and reproducible baseline, see
+> [RAG_v2_Implementation_and_Baseline.md](RAG_v2_Implementation_and_Baseline.md).
 ## FitScience Coach - Iterative Development Journey
 
 ---
@@ -334,4 +340,3 @@ The FitScience Coach RAG system demonstrates **excellent performance** (85.7%) s
 *System: FitScience Coach v3.0*  
 *Framework: RAGAs with OpenAI GPT-4o-mini*  
 *Final Score: 0.857 (Excellent) ⭐⭐⭐⭐⭐*
-

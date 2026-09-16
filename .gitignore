@@ -13,6 +13,10 @@ venv/
 dist/
 build/
 
+# Runtime observability and evaluation outputs (versioned summaries belong in reports/)
+logs/
+evaluation_runs/
+
 # IDE / OS
 .DS_Store
 .idea/

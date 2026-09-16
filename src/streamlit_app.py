@@ -574,7 +574,8 @@ def main():
         rag = st.session_state.rag_system
         has_llm = rag and rag.llm in ("groq", "openai")
         if has_llm:
-            st.success("🦙 Groq Llama ready — AI answers enabled")
+            provider = "OpenAI GPT-4o-mini" if rag.llm == "openai" else "Groq Llama"
+            st.success(f"✅ {provider} ready — citation-constrained answers enabled")
         elif st.session_state.groq_api_key:
             st.warning("Key set but LLM not ready. Run: pip install langchain-groq, then restart")
         else:
@@ -1124,10 +1125,19 @@ correct_index is 0 for first option, 1 for second, etc.""",
             if 'selected_quick_question' in st.session_state:
                 del st.session_state.selected_quick_question
             
-            with st.spinner("🔍 Searching knowledge base..."):
-                result = st.session_state.rag_system.query(question.strip())
+            history_context = [
+                {"question": item["question"]}
+                for item in st.session_state.query_history[-3:]
+            ]
+            with st.spinner("🔍 Retrieving and verifying evidence..."):
+                result = st.session_state.rag_system.query(
+                    question.strip(), conversation_history=history_context
+                )
             
             if "error" not in result:
+                if result.get("status") in {"abstained", "insufficient_evidence"}:
+                    st.info("FitScience did not generate a recommendation because the request needs professional assessment or the evidence snapshot is insufficient.")
+
                 # Display answer with green styling
                 st.markdown("**💡 Answer:**")
                 clean_answer = result['answer'].replace('</div>', '').replace('<div>', '').strip()
@@ -1141,15 +1151,24 @@ correct_index is 0 for first option, 1 for second, etc.""",
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Display sources line by line
+                # Each source label maps to the exact evidence section used in the answer.
                 if result['sources']:
-                    st.markdown("**📚 Sources:**")
-                    for i, source in enumerate(result['sources'], 1):
+                    st.markdown("**📚 Evidence used:**")
+                    for source in result['sources']:
                         url = source.get('url') or ''
+                        label = source.get('label', 'Source')
+                        details = (
+                            f"{source.get('evidence_level', 'Evidence')} · "
+                            f"{source.get('published_year', 'year not listed')} · "
+                            f"{source.get('section', 'section not listed')}"
+                        )
                         if url:
-                            st.markdown(f"{i}. **{source['title']}** | [{url}]({url})")
+                            st.markdown(f"**[{label}] {source['title']}** — {details} | [Open source]({url})")
                         else:
-                            st.markdown(f"{i}. **{source['title']}**")
+                            st.markdown(f"**[{label}] {source['title']}** — {details}")
+                    verifier = result.get("citation_verifier", {})
+                    if verifier:
+                        st.caption(f"Citation contract: {verifier.get('status', 'not available')}. Trace: {result.get('trace_id', 'n/a')}")
                 
                 # Save to history
                 st.session_state.query_history.append({

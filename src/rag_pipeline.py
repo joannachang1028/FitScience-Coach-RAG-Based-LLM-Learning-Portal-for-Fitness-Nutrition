@@ -1,659 +1,454 @@
-"""
-FitScience Coach - RAG Pipeline
-Personal Learning Portal for Evidence-Based Fitness & Nutrition
+"""FitScience Coach v2: evidence-grounded, traceable RAG for health education.
+
+The LLM only summarizes retrieved evidence. Deterministic code performs
+calculations, while safety policy decides when the assistant must abstain.
 """
 
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-# Load .env from project root
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
-import pandas as pd
-import numpy as np
-from typing import List, Dict, Any
+from __future__ import annotations
+
+import hashlib
 import json
-from datetime import datetime
+import math
+import os
+import re
+import time
+import uuid
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional, Sequence
 
-# LangChain imports
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from dotenv import load_dotenv
+from langchain.schema import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain.schema import Document
-import requests
 
-# OpenAI imports (optional - for improved faithfulness)
 try:
     from langchain_openai import ChatOpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
 
-# Groq imports (free tier - no local install needed)
 try:
     from langchain_groq import ChatGroq
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
 
-# Streamlit for demo
-import streamlit as st
+try:
+    from sentence_transformers import CrossEncoder
+    CROSS_ENCODER_AVAILABLE = True
+except ImportError:
+    CROSS_ENCODER_AVAILABLE = False
+
+ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
+EVIDENCE_PATH = ROOT / "data" / "evidence_corpus.jsonl"
+TRACE_PATH = ROOT / "logs" / "rag_traces.jsonl"
+PROMPT_VERSION = "evidence-contract-v2"
+STOP_WORDS = {
+    "a", "an", "the", "and", "or", "for", "to", "of", "in", "on", "is", "are",
+    "i", "me", "my", "you", "your", "what", "how", "should", "can", "could", "do",
+    "does", "with", "about", "from", "it", "this", "that", "be", "as", "at", "per",
+}
+HIGH_RISK_TERMS = {
+    "pregnant", "pregnancy", "breastfeeding", "eating disorder", "anorexia", "bulimia",
+    "diabetes", "kidney disease", "heart disease", "cancer", "medication", "prescription",
+    "injury", "injured", "pain", "chest pain", "suicidal", "minor", "under 18",
+}
+PROMPT_INJECTION_TERMS = {
+    "ignore previous instructions", "ignore all instructions", "reveal your system prompt",
+    "show system prompt", "developer message", "jailbreak",
+}
+# The manifest defines what this snapshot can teach. A term occurring incidentally
+# in a paper's bibliography is not enough to claim the corpus covers that topic.
+COVERAGE_TERMS = {
+    "protein", "resistance", "strength", "hypertrophy", "muscle", "training",
+    "progression", "overload", "periodization", "sets", "repetitions",
+    "body", "composition", "energy", "calorie", "calories", "neat", "activity",
+    "micronutrient", "micronutrients", "vitamin", "vitamins", "mineral", "minerals",
+    "supplement", "supplements", "nutrition", "nutrient", "timing", "diet",
+}
+
+
+def tokenize(text: str) -> list[str]:
+    tokens: list[str] = []
+    for word in re.findall(r"[a-zA-Z][a-zA-Z0-9-]{1,}", text.lower()):
+        tokens.append(word)
+        # Keep the compound for exact matching and its parts for coverage/BM25.
+        if "-" in word:
+            tokens.extend(part for part in word.split("-") if len(part) > 1)
+    return [word for word in tokens if word not in STOP_WORDS]
+
+
+def mask_pii(text: str) -> str:
+    text = re.sub(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", "[EMAIL]", text)
+    return re.sub(r"\b(?:\+?\d[\d .()-]{7,}\d)\b", "[PHONE]", text)
+
 
 class FitScienceRAG:
-    def __init__(self, use_groq: bool = True, openai_api_key: str = None, groq_api_key: str = None):
-        """Initialize the RAG system for FitScience Coach
-        
-        Args:
-            use_groq: If True, use Groq Llama (free cloud API - no local install)
-            openai_api_key: Optional OpenAI API key for GPT-4o-mini (better faithfulness)
-            groq_api_key: Groq API key for free Llama (get at console.groq.com)
-        """
+    """Local-index RAG with hybrid retrieval, citations, safety, and traces."""
+
+    def __init__(
+        self,
+        use_groq: bool = True,
+        openai_api_key: Optional[str] = None,
+        groq_api_key: Optional[str] = None,
+        enable_reranker: bool = False,
+        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    ) -> None:
         self.use_groq = use_groq
-        self.openai_api_key = openai_api_key
+        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
         self.groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY", "")
-        
-        # Initialize components
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", ".", "!", "?", ",", " ", ""]
-        )
-        
-        # Use sentence transformers for embeddings (free)
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"}
-        )
-        
-        self.vectorstore = None
-        self.qa_chain = None
-        self.corpus_metadata = []
-        self.llm = None  # "openai" | "groq" | None
+        self.enable_reranker = enable_reranker
+        self.reranker_model = reranker_model
+        self.reranker = None
+        self.reranker_status = "disabled"
+        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={"device": "cpu"})
+        self.vectorstore: Optional[FAISS] = None
+        self.documents: list[Document] = []
+        self.doc_by_id: dict[str, Document] = {}
+        self.bm25_idf: dict[str, float] = {}
+        self.doc_term_counts: dict[str, Counter] = {}
+        self.average_doc_length = 1.0
+        self.llm: Optional[str] = None
         self.openai_llm = None
         self.groq_llm = None
-        
-    def load_corpus_from_csv(self, csv_path: str = "data/learning_corpus.csv"):
-        """Load learning corpus from CSV file"""
-        try:
-            df = pd.read_csv(csv_path)
-            self.corpus_metadata = df.to_dict('records')
-            print(f"✅ Loaded {len(self.corpus_metadata)} sources from corpus")
-            return df
-        except Exception as e:
-            print(f"❌ Error loading corpus: {e}")
-            return None
-    
-    def create_synthetic_content(self):
-        """Create synthetic content for demo purposes based on corpus metadata"""
-        documents = []
-        
-        # Sample content templates based on the corpus
-        content_templates = {
-            "protein_requirements": """
-            Protein Requirements for Resistance Training:
-            
-            Based on meta-analyses, the optimal protein intake for resistance training is 1.6-2.2g per kg bodyweight per day. 
-            This supports muscle protein synthesis and recovery. Protein should be distributed throughout the day, 
-            with 20-40g per meal to maximize muscle protein synthesis rates.
-            
-            Key findings from Morton et al. (2017) meta-analysis show that protein intakes above 1.6g/kg/day 
-            provide diminishing returns for muscle hypertrophy. Timing around workouts is less critical than 
-            total daily intake, but consuming protein within 2 hours post-workout can enhance recovery.
-            """,
-            
-            "bmr_calculation": """
-            Basal Metabolic Rate (BMR) Calculation:
-            
-            BMR represents the calories your body burns at rest. The Harris-Benedict equation is commonly used:
-            - Men: BMR = 88.362 + (13.397 × weight in kg) + (4.799 × height in cm) - (5.677 × age in years)
-            - Women: BMR = 447.593 + (9.247 × weight in kg) + (3.098 × height in cm) - (4.330 × age in years)
-            
-            For activity levels, multiply BMR by:
-            - Sedentary: 1.2 (little/no exercise)
-            - Lightly active: 1.375 (light exercise 1-3 days/week)
-            - Moderately active: 1.55 (moderate exercise 3-5 days/week)
-            - Very active: 1.725 (hard exercise 6-7 days/week)
-            - Extremely active: 1.9 (very hard exercise, physical job)
-            """,
-            
-            "training_progression": """
-            Progressive Overload in Strength Training:
-            
-            Progressive overload is the gradual increase of stress placed on the body during training. 
-            This can be achieved through:
-            1. Increasing weight (most common)
-            2. Increasing reps with same weight
-            3. Increasing sets
-            4. Decreasing rest periods
-            5. Increasing training frequency
-            
-            For beginners, aim for 2-3 sets of 8-12 reps, 2-3 times per week per muscle group.
-            Progress should be consistent but gradual - typically 2.5-5lb increases weekly for compound movements.
-            
-            Recovery is crucial. Allow 48-72 hours between training the same muscle groups.
-            """,
-            
-            "micronutrients": """
-            Essential Micronutrients for Fitness:
-            
-            Key vitamins and minerals for active individuals:
-            - Vitamin D: Important for muscle function and bone health. 1000-2000 IU daily recommended.
-            - Magnesium: Supports muscle contraction and energy production. 400-600mg daily.
-            - Iron: Critical for oxygen transport. Women need 18mg, men 8mg daily.
-            - Zinc: Supports immune function and protein synthesis. 8-11mg daily.
-            - B-vitamins: Essential for energy metabolism and recovery.
-            
-            Best sources are whole foods, but supplements can help fill gaps. 
-            Consider a multivitamin if diet is inconsistent.
-            """,
-            
-            "omega3_supplements": """
-            Omega-3 Fatty Acids and Fish Oil:
-            
-            Omega-3 fatty acids (EPA and DHA) are essential fats that support heart health, brain function, and inflammation control.
-            For general health: 1-2g daily (1000-2000mg)
-            For cardiovascular benefits: 2-4g daily
-            For athletes: 2-3g daily may help with recovery and inflammation
-            
-            Look for supplements with high EPA/DHA content (500mg+ combined per capsule).
-            Take with meals to improve absorption and reduce fishy aftertaste.
-            Quality matters - choose reputable brands with third-party testing.
-            
-            If you eat fatty fish (salmon, mackerel, sardines) 2-3 times per week, you may need less supplementation.
-            """,
-            
-            "neat_activity": """
-            NEAT (Non-Exercise Activity Thermogenesis):
-            
-            NEAT includes all daily activities outside of formal exercise: walking, fidgeting, 
-            standing, household chores, etc. NEAT can vary by 200-900 calories daily between individuals.
-            
-            To increase NEAT:
-            - Take stairs instead of elevators
-            - Walk during phone calls
-            - Use a standing desk
-            - Park farther from destinations
-            - Do household chores actively
-            
-            Tracking steps (aim for 8,000-12,000 daily) is a good NEAT proxy.
-            """,
-            
-            "sleep_recovery": """
-            Sleep and Athletic Recovery:
-            
-            Sleep is crucial for athletic performance and recovery. Adults need 7-9 hours of quality sleep nightly.
-            During sleep, the body releases growth hormone, repairs muscle tissue, and consolidates motor learning.
-            
-            Poor sleep negatively affects:
-            - Muscle protein synthesis
-            - Immune function
-            - Cognitive performance
-            - Injury risk
-            - Appetite regulation
-            
-            For optimal sleep:
-            - Maintain consistent sleep schedule
-            - Create cool, dark environment (65-68°F)
-            - Avoid screens 1 hour before bed
-            - Limit caffeine after 2pm
-            - Consider meditation or relaxation techniques
-            """,
-            
-            "workout_splits": """
-            Training Program Design and Workout Splits:
-            
-            Effective workout splits depend on training experience and goals:
-            
-            Beginners: Full-body workouts 2-3x per week
-            - Focus on compound movements
-            - 2-3 sets of 8-12 reps
-            - Allow 48-72 hours between sessions
-            
-            Intermediate: Upper/lower split 4x per week
-            - Monday: Upper body
-            - Tuesday: Lower body
-            - Thursday: Upper body
-            - Friday: Lower body
-            
-            Advanced: Push/pull/legs or body part splits
-            - Push: Chest, shoulders, triceps
-            - Pull: Back, biceps
-            - Legs: Quads, hamstrings, glutes
-            
-            Key principles:
-            - Train each muscle group 2-3x per week
-            - Progressive overload
-            - Adequate recovery between sessions
-            - Focus on compound movements first
-            """
-        }
-        
-        # Create documents with metadata
-        for i, source in enumerate(self.corpus_metadata):
-            # Map sources to content templates
-            content_key = None
-            title_lower = source['Title'].lower()
-            
-            if 'protein' in title_lower:
-                content_key = 'protein_requirements'
-            elif 'bmr' in title_lower or 'metabolic' in title_lower:
-                content_key = 'bmr_calculation'
-            elif 'training' in title_lower or 'workout' in title_lower or 'progressive' in title_lower or 'resistance' in title_lower:
-                content_key = 'training_progression'
-            elif 'split' in title_lower or 'best workout' in title_lower:
-                content_key = 'workout_splits'
-            elif 'micronutrient' in title_lower or 'vitamin' in title_lower or 'supplement' in title_lower:
-                content_key = 'micronutrients'
-            elif 'omega' in title_lower or 'fish oil' in title_lower:
-                content_key = 'omega3_supplements'
-            elif 'neat' in title_lower or 'activity' in title_lower:
-                content_key = 'neat_activity'
-            elif 'sleep' in title_lower:
-                content_key = 'sleep_recovery'
-            elif 'energy' in title_lower or 'calorie' in title_lower or 'balance' in title_lower:
-                content_key = 'bmr_calculation'
-            elif 'periodization' in title_lower:
-                content_key = 'training_progression'
-            elif 'nutrition' in title_lower or 'performance' in title_lower:
-                content_key = 'protein_requirements'
-            elif 'cavaliere' in title_lower or 'athlean' in title_lower:
-                content_key = 'workout_splits'
-            elif 'jamnadas' in title_lower or 'visceral' in title_lower or 'fat' in title_lower:
-                content_key = 'bmr_calculation'
-            elif 'attia' in title_lower or 'longevity' in title_lower:
-                content_key = 'training_progression'
-            elif 'probiotic' in title_lower or 'metabolic' in title_lower:
-                content_key = 'micronutrients'
-            elif 'myplate' in title_lower or 'nhs' in title_lower or 'nih' in title_lower:
-                content_key = 'micronutrients'
-            else:
-                # Generic content for other sources - use training progression as safer default
-                content_key = 'training_progression'
-            
-            if content_key in content_templates:
-                doc = Document(
-                    page_content=content_templates[content_key],
-                    metadata={
-                        'source': source['Title'],
-                        'url': source['URL'],
-                        'type': source['Type'],
-                        'relevance': source['Relevance'],
-                        'notes': source['Notes']
-                    }
-                )
-                documents.append(doc)
-        
-        return documents
-    
-    def build_vectorstore(self, documents: List[Document]):
-        """Build FAISS vector store from documents"""
-        try:
-            print("🔄 Building vector store...")
-            self.vectorstore = FAISS.from_documents(documents, self.embeddings)
-            print(f"✅ Vector store built with {len(documents)} documents")
-            return True
-        except Exception as e:
-            print(f"❌ Error building vector store: {e}")
-            return False
-    
-    def setup_qa_chain(self):
-        """Setup retriever and LLM for QA with citations"""
-        if not self.vectorstore:
-            print("❌ Vector store not initialized")
-            return False
+        self.last_generation_model = "corpus-only"
+        self.exact_cache: dict[str, dict[str, Any]] = {}
 
-        try:
-            # Initialize Groq (free cloud API - no local install)
-            if self.use_groq and GROQ_AVAILABLE and self.groq_api_key:
-                self.llm = "groq"
-                print("✅ Groq Llama ready (free cloud API)")
-            elif self.use_groq and not GROQ_AVAILABLE:
-                print("⚠️ Install langchain-groq: pip install langchain-groq")
-                self.llm = None
-            elif self.use_groq and not self.groq_api_key:
-                print("⚠️ GROQ_API_KEY not set - add to .env and restart app. Using corpus-only mode.")
-                self.llm = None
-            else:
-                print("⚠️ Groq disabled. Using corpus-only mode.")
-                self.llm = None
-
-            # Keep retriever available with adaptive retrieval
-            self.qa_chain = self.vectorstore.as_retriever(search_kwargs={"k": 8})
-            print("✅ QA components ready")
-            return True
-        except Exception as e:
-            print(f"❌ Error setting up QA components: {e}")
-            return False
-    
-    def calculate_bmr(self, weight_kg: float, height_cm: float, age: int, gender: str) -> float:
-        """Calculate BMR using Harris-Benedict equation"""
-        if gender.lower() in ['male', 'm', 'man']:
-            bmr = 88.362 + (13.397 * weight_kg) + (4.799 * height_cm) - (5.677 * age)
-        elif gender.lower() in ['female', 'f', 'woman']:
-            bmr = 447.593 + (9.247 * weight_kg) + (3.098 * height_cm) - (4.330 * age)
-        else:
-            raise ValueError("Gender must be 'male' or 'female'")
-        return round(bmr, 1)
-    
-    def calculate_tdee(self, bmr: float, activity_level: str) -> float:
-        """Calculate TDEE from BMR and activity level"""
-        activity_multipliers = {
-            'sedentary': 1.2,           # Little/no exercise
-            'lightly_active': 1.375,    # Light exercise 1-3 days/week
-            'moderately_active': 1.55,  # Moderate exercise 3-5 days/week
-            'very_active': 1.725,       # Hard exercise 6-7 days/week
-            'extremely_active': 1.9     # Very hard exercise, physical job
-        }
-        
-        activity_level_lower = activity_level.lower().replace(' ', '_')
-        if activity_level_lower in activity_multipliers:
-            tdee = bmr * activity_multipliers[activity_level_lower]
-            return round(tdee, 1)
-        else:
-            raise ValueError(f"Invalid activity level. Choose from: {list(activity_multipliers.keys())}")
-    
-    def generate_openai_response(self, context: str, question: str, docs=None) -> str:
-        """Generate response using OpenAI GPT-4o-mini with maximum faithfulness"""
-        try:
-            if not self.openai_llm:
-                # Initialize OpenAI LLM if not already done
-                if not OPENAI_AVAILABLE or not self.openai_api_key:
-                    raise Exception("OpenAI not available or API key not provided")
-                
-                self.openai_llm = ChatOpenAI(
-                    model="gpt-4o-mini",
-                    temperature=0.0,  # Zero temperature for maximum faithfulness
-                    api_key=self.openai_api_key
-                )
-            
-            # Strict prompt for faithfulness
-            prompt = f"""You are FitScience Coach, a fitness and nutrition expert. You MUST answer ONLY using the research sources provided below. Do NOT add any information from general knowledge.
-
-Research Sources from Knowledge Base:
-{context}
-
-User Question: {question}
-
-CRITICAL INSTRUCTIONS:
-1. Answer ONLY using information explicitly stated in the research sources above
-2. If sources don't contain enough information, say "Based on the available sources..." and provide only what's available
-3. DO NOT add facts, numbers, or recommendations not present in the sources
-4. Quote or paraphrase DIRECTLY from the sources - do not infer or extrapolate
-5. Use conservative language: "According to the research...", "The research shows..."
-6. Do NOT include sources or a references list in your answer—they are displayed separately.
-
-Answer (using ONLY the explicit information from the sources above):"""
-            
-            # Generate response
-            response = self.openai_llm.invoke(prompt)
-            return response.content.strip()
-            
-        except Exception as e:
-            return f"OpenAI generation error: {e}"
-    
-    def generate_groq_response(self, context: str, question: str, docs=None) -> str:
-        """Generate response using Groq Llama (free cloud API) with high faithfulness"""
-        try:
-            if not self.groq_llm:
-                if not GROQ_AVAILABLE or not self.groq_api_key:
-                    raise Exception("Groq not available or API key not provided")
-                self.groq_llm = ChatGroq(
-                    model="llama-3.1-8b-instant",
-                    temperature=0.0,
-                    api_key=self.groq_api_key
-                )
-            
-            prompt = f"""You are FitScience Coach, a fitness and nutrition expert. You MUST answer ONLY using the research sources provided below. Do NOT add information from general knowledge.
-
-Research Sources from Knowledge Base:
-{context}
-
-User Question: {question}
-
-CRITICAL INSTRUCTIONS:
-1. Answer ONLY using information explicitly stated in the research sources above
-2. If the sources don't contain enough information, say "Based on the available sources..." and provide what's available
-3. DO NOT add facts, numbers, or recommendations not present in the sources
-4. Quote or paraphrase directly from the sources
-5. Be conversational but stay strictly faithful to the source material
-6. Do NOT include sources or a references list in your answer—they are displayed separately.
-
-Answer (using ONLY the information from the sources above):"""
-            
-            response = self.groq_llm.invoke(prompt)
-            return response.content.strip() if hasattr(response, 'content') else str(response)
-            
-        except Exception as e:
-            return f"Groq API error: {e}"
-    
-    def query(self, question: str) -> Dict[str, Any]:
-        """Query the RAG system with LLM answer and explicit source links"""
-        if not self.qa_chain:
-            return {"error": "QA chain not initialized"}
-        
-        try:
-            # Retrieve relevant docs
-            docs = self.qa_chain.invoke(question)
-            print(f"📚 Initial search found {len(docs)} relevant sources for: '{question[:50]}...'")
-
-            # If no relevant docs found, try broader search terms
-            if len(docs) == 0:
-                print("🔍 No relevant sources found, trying broader search...")
-                # Try searching with key terms from the question
-                question_words = question.lower().split()
-                key_terms = [word for word in question_words if len(word) > 3 and word not in ['what', 'how', 'when', 'where', 'why', 'should', 'would', 'could', 'will', 'does', 'doesn', 'don', 'isn', 'aren', 'wasn', 'weren', 'haven', 'hasn', 'hadn', 'won', 'can', 'can\'t']]
-                
-                if key_terms:
-                    # Try searching with the most relevant terms
-                    search_terms = " ".join(key_terms[:3])  # Use top 3 terms
-                    docs = self.qa_chain.invoke(search_terms)
-                    print(f"🔍 Broader search with terms '{search_terms}' found {len(docs)} sources")
-
-            # Build context with sources
-            context_lines = []
-            for idx, d in enumerate(docs, 1):
-                title = d.metadata.get('source', f'Source {idx}')
-                url = d.metadata.get('url', '')
-                note = d.metadata.get('notes', d.metadata.get('relevance', ''))
-                context_lines.append(f"[{idx}] {title} | {url} | {note}\n{d.page_content[:800]}")
-
-            context_text = "\n\n".join(context_lines)
-
-            # Always use LLM to generate answer (corpus + general knowledge)
-            print(f"📚 Using {len(docs)} relevant sources in final answer")
-            answer = self._generate_llm_answer(context_text, question, docs)
-
-            return {
-                "answer": answer,
-                "sources": [
-                    {
-                        "title": d.metadata.get('source', 'Unknown'),
-                        "url": d.metadata.get('url', ''),
-                        "type": d.metadata.get('type', ''),
-                        "relevance": d.metadata.get('relevance', ''),
-                        "notes": d.metadata.get('notes', ''),
-                        "content_preview": d.page_content[:200] + "..."
-                    }
-                    for d in docs
-                ]
-            }
-        except Exception as e:
-            return {"error": f"Query failed: {e}"}
-    
-    def _generate_llm_answer(self, context_text: str, question: str, docs) -> str:
-        """Generate answer using LLM with corpus context - OpenAI preferred, Groq as free option"""
-        
-        # Priority 1: Try OpenAI GPT-4o-mini (best faithfulness)
-        if self.openai_api_key and OPENAI_AVAILABLE:
-            try:
-                print("🤖 Using OpenAI GPT-4o-mini for high-faithfulness response...")
-                return self.generate_openai_response(context_text, question, docs)
-            except Exception as e:
-                print(f"⚠️ OpenAI failed: {e}, falling back to Groq...")
-        
-        # Priority 2: Try Groq Llama (free cloud API - no local install)
-        if self.llm == "groq":
-            try:
-                print("🦙 Using Groq Llama (free cloud API)...")
-                return self.generate_groq_response(context_text, question, docs)
-            except Exception as e:
-                print(f"⚠️ Groq failed, falling back to corpus-only response: {e}")
-                return self._create_corpus_fallback_response(docs, question)
-        else:
-            # Try Groq if we have key but wasn't set at init
-            if self.use_groq and self.groq_api_key and GROQ_AVAILABLE:
-                print("🦙 Groq API key found, generating answer...")
-                self.llm = "groq"
-                try:
-                    return self.generate_groq_response(context_text, question, docs)
-                except Exception as e:
-                    print(f"⚠️ Groq failed: {e}")
-            
-            return self._no_llm_message(docs)
-    
-    
-    def _create_corpus_fallback_response(self, docs, question: str) -> str:
-        """Create a faithful response using ONLY corpus content when LLM fails"""
+    # ------------------------------- ingestion --------------------------------
+    def load_evidence_corpus(self, corpus_path: Path = EVIDENCE_PATH) -> list[Document]:
+        if not corpus_path.exists():
+            raise FileNotFoundError(f"Evidence snapshot not found at {corpus_path}. Run `python src/ingest_evidence.py`.")
+        docs: list[Document] = []
+        for line in corpus_path.read_text().splitlines():
+            record = json.loads(line)
+            metadata = {key: value for key, value in record.items() if key != "content"}
+            metadata["source"] = record["title"]  # keeps the existing Streamlit UI compatible
+            docs.append(Document(page_content=record["content"], metadata=metadata))
         if not docs:
-            return ("I couldn't find specific information about your question in my knowledge base. "
-                   "Please try rephrasing your question or ask about training, nutrition, supplements, or health topics.")
-        
-        # Extract and present information EXACTLY from sources
-        response_parts = ["Based on the research sources in my knowledge base:\n"]
-        
-        for idx, doc in enumerate(docs[:3], 1):  # Use top 3 most relevant sources
-            source = doc.metadata.get('source', 'Unknown source')
-            content = doc.page_content[:600].strip()  # More content for completeness
-            
-            response_parts.append(f"\n**Source {idx}: {source}**")
-            response_parts.append(content)
-            if not content.endswith('.'):
-                response_parts.append("...")
-        
-        response_parts.append("\n\n*These excerpts are directly from peer-reviewed sources and official guidelines.*")
-        
-        return "\n".join(response_parts)
+            raise ValueError("Evidence snapshot contains no chunks")
+        self.documents, self.doc_by_id = docs, {doc.metadata["chunk_id"]: doc for doc in docs}
+        return docs
 
-    def _no_llm_message(self, docs) -> str:
-        """Show helpful message when no LLM is available"""
-        groq_help = (
-            "**Host setup only (users don't need to do anything):**\n"
-            "• Get a free API key at [console.groq.com](https://console.groq.com)\n"
-            "• Add `GROQ_API_KEY=your-key` to `.env` in the project root\n"
-            "• Restart the Streamlit app"
-        )
-        if not docs:
-            return f"I need a Groq API key to provide comprehensive answers. {groq_help}"
-        
-        return ("I found relevant sources in my knowledge base, but I need a Groq API key for AI answers.\n\n"
-                + groq_help + "\n\n"
-                "**Sources found in my knowledge base:**\n" +
-                "\n".join([f"• {d.metadata.get('source', 'Unknown')}" for d in docs[:3]]))
-    
-    def _simple_corpus_response(self, docs, question):
-        """Faithful corpus-only response - NO hallucination, ONLY source content"""
-        if not docs:
-            return {
-                "answer": "I couldn't find specific information about your question in my knowledge base. Please try rephrasing your question or ask about training, nutrition, supplements, or health topics.",
-                "sources": []
-            }
-        
-        # Build answer using ONLY exact corpus content
-        answer = "According to the research sources in my knowledge base:\n\n"
-        unique_content = []
-        seen_content = set()
-        
-        for d in docs[:3]:  # Limit to top 3 for quality
-            content_sig = d.page_content[:150].strip()
-            if content_sig not in seen_content and len(content_sig) > 30:
-                seen_content.add(content_sig)
-                # Keep more content and preserve structure
-                clean_content = d.page_content[:500].strip()
-                source_name = d.metadata.get('source', 'Research source')
-                unique_content.append(f"**{source_name}:**\n{clean_content}")
-        
-        if unique_content:
-            answer += "\n\n".join(unique_content)
-        else:
-            answer += docs[0].page_content[:500].strip()
-        
-        # Add source citations
-        answer += f"\n\n**Referenced Sources:**\n"
-        for d in docs[:4]:
-            source_name = d.metadata.get('source', 'Unknown Source')
-            source_url = d.metadata.get('url', '')
-            source_type = d.metadata.get('type', '')
-            if source_url and source_url != '':
-                answer += f"- [{source_name}]({source_url}) ({source_type})\n"
-            else:
-                answer += f"- {source_name} ({source_type})\n"
-        
-        answer += "\n*All information above is directly extracted from peer-reviewed research and official health guidelines.*"
-        
-        return {
-            "answer": answer,
-            "sources": [
-                {
-                    "title": d.metadata.get('source', 'Unknown'),
-                    "url": d.metadata.get('url', ''),
-                    "type": d.metadata.get('type', ''),
-                    "relevance": d.metadata.get('relevance', ''),
-                    "notes": d.metadata.get('notes', ''),
-                    "content_preview": d.page_content[:200] + "..."
-                }
-                for d in docs
-            ]
+    def _build_bm25_index(self) -> None:
+        frequency: Counter = Counter()
+        total_length = 0
+        self.doc_term_counts = {}
+        for doc in self.documents:
+            counts = Counter(tokenize(doc.page_content))
+            self.doc_term_counts[doc.metadata["chunk_id"]] = counts
+            frequency.update(counts.keys())
+            total_length += sum(counts.values())
+        self.average_doc_length = total_length / max(len(self.documents), 1)
+        n_docs = len(self.documents)
+        self.bm25_idf = {
+            term: math.log(1 + (n_docs - count + 0.5) / (count + 0.5))
+            for term, count in frequency.items()
         }
-    
-    def initialize_system(self):
-        """Initialize the complete RAG system"""
-        print("🚀 Initializing FitScience Coach RAG System...")
-        
-        # Load corpus
-        corpus_df = self.load_corpus_from_csv()
-        if corpus_df is None:
+
+    def build_vectorstore(self, documents: Optional[list[Document]] = None) -> bool:
+        documents = documents or self.documents
+        if not documents:
             return False
-        
-        # Create synthetic content for demo
-        documents = self.create_synthetic_content()
-        
-        # Build vector store
-        if not self.build_vectorstore(documents):
-            return False
-        
-        # Setup QA chain
-        if not self.setup_qa_chain():
-            return False
-        
-        print("✅ FitScience Coach RAG System ready!")
+        self.vectorstore = FAISS.from_documents(documents, self.embeddings)
+        self._build_bm25_index()
         return True
 
-def main():
-    """Demo function"""
-    rag = FitScienceRAG()
-    
-    if rag.initialize_system():
-        # Demo queries
-        demo_questions = [
-            "How much protein should I eat for muscle building?",
-            "How do I calculate my daily calorie needs?",
-            "What is progressive overload in training?",
-            "What micronutrients are important for athletes?",
-            "How much fish oil should I take per day?"
-        ]
-        
-        for question in demo_questions:
-            print(f"\n❓ Question: {question}")
-            result = rag.query(question)
-            
-            if "error" not in result:
-                print(f"💡 Answer: {result['answer'][:200]}...")
-                print(f"📚 Sources: {len(result['sources'])} found")
-                for source in result['sources']:
-                    print(f"   - {source['title']}")
-            else:
-                print(f"❌ Error: {result['error']}")
+    def _setup_models(self) -> None:
+        if self.openai_api_key and OPENAI_AVAILABLE:
+            self.llm = "openai"
+        elif self.use_groq and self.groq_api_key and GROQ_AVAILABLE:
+            self.llm = "groq"
+        if self.enable_reranker and CROSS_ENCODER_AVAILABLE:
+            try:
+                self.reranker = CrossEncoder(self.reranker_model)
+                self.reranker_status = f"enabled:{self.reranker_model}"
+            except Exception as exc:
+                self.reranker_status = f"fallback_rrf:{type(exc).__name__}"
+        elif self.enable_reranker:
+            self.reranker_status = "fallback_rrf:sentence-transformers-unavailable"
 
-if __name__ == "__main__":
-    main()
+    def initialize_system(self) -> bool:
+        try:
+            self.load_evidence_corpus()
+            self.build_vectorstore()
+            self._setup_models()
+            return True
+        except Exception as exc:
+            print(f"FitScience initialization failed: {exc}")
+            return False
+
+    # ------------------------------ guardrails --------------------------------
+    def classify_query_risk(self, question: str) -> tuple[str, str]:
+        normalized = question.lower()
+        if any(term in normalized for term in PROMPT_INJECTION_TERMS):
+            return "blocked", "prompt_injection"
+        if any(term in normalized for term in HIGH_RISK_TERMS):
+            return "high", "medical_or_vulnerable_population"
+        return "standard", "education"
+
+    @staticmethod
+    def has_declared_coverage(question: str) -> bool:
+        """Reject topics outside the curated manifest before fuzzy retrieval."""
+        return bool(set(tokenize(question)) & COVERAGE_TERMS)
+
+    @staticmethod
+    def _safety_response(reason: str) -> str:
+        if reason == "prompt_injection":
+            return "I can help with evidence-based fitness and nutrition education, but I cannot follow instructions that attempt to override this safety policy."
+        return ("This involves health circumstances that need individualized assessment. I can share general education from the evidence base, "
+                "but please consult a qualified clinician, registered dietitian, or sports-medicine professional before changing training, diet, or supplements.")
+
+    # ------------------------------- retrieval ---------------------------------
+    def rewrite_query(self, question: str, conversation_history: Optional[Sequence[dict[str, str]]] = None) -> str:
+        """Resolve short follow-ups without adding facts or calling a second model."""
+        cleaned = " ".join(question.split())
+        if not conversation_history or len(tokenize(cleaned)) > 4:
+            return cleaned
+        prior = conversation_history[-1].get("question", "")
+        return f"{prior} Follow-up: {cleaned}" if prior else cleaned
+
+    def _bm25_search(self, question: str, limit: int) -> list[tuple[str, float]]:
+        scores: list[tuple[str, float]] = []
+        for doc_id, counts in self.doc_term_counts.items():
+            doc_length, score = sum(counts.values()), 0.0
+            for term in tokenize(question):
+                tf = counts.get(term, 0)
+                if tf:
+                    score += self.bm25_idf.get(term, 0) * (tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * doc_length / self.average_doc_length))
+            if score:
+                scores.append((doc_id, score))
+        return sorted(scores, key=lambda item: item[1], reverse=True)[:limit]
+
+    def _dense_search(self, question: str, limit: int) -> list[tuple[str, float]]:
+        if not self.vectorstore:
+            return []
+        return [(doc.metadata["chunk_id"], 1 / (1 + float(distance)))
+                for doc, distance in self.vectorstore.similarity_search_with_score(question, k=limit)]
+
+    @staticmethod
+    def _rrf(rankings: Sequence[Sequence[tuple[str, float]]], k: int = 60) -> dict[str, float]:
+        fused: defaultdict[str, float] = defaultdict(float)
+        for ranking in rankings:
+            for rank, (doc_id, _) in enumerate(ranking, start=1):
+                fused[doc_id] += 1 / (k + rank)
+        return dict(fused)
+
+    def _metadata_match(self, doc: Document, query_terms: set[str]) -> bool:
+        return bool(query_terms & set(tokenize(" ".join(doc.metadata.get("topics", [])))))
+
+    def retrieve(self, question: str) -> tuple[list[Document], dict[str, Any]]:
+        if not self.vectorstore:
+            raise RuntimeError("RAG system is not initialized")
+        lexical, dense = self._bm25_search(question, 16), self._dense_search(question, 16)
+        fused, query_terms = self._rrf([lexical, dense]), set(tokenize(question))
+        ordered_ids = sorted(fused, key=lambda doc_id: (self._metadata_match(self.doc_by_id[doc_id], query_terms), fused[doc_id]), reverse=True)
+        candidates = [self.doc_by_id[doc_id] for doc_id in ordered_ids[:16]]
+        scores = {doc_id: fused[doc_id] for doc_id in ordered_ids}
+        if self.reranker and candidates:
+            rerank_scores = self.reranker.predict([(question, doc.page_content) for doc in candidates])
+            ranked = sorted(zip(rerank_scores, candidates), key=lambda pair: pair[0], reverse=True)
+            candidates, scores = [doc for _, doc in ranked], {doc.metadata["chunk_id"]: float(score) for score, doc in ranked}
+        lexical_terms_found = len(set(term for doc_id, _ in lexical for term in self.doc_term_counts[doc_id]) & query_terms)
+        if lexical_terms_found == 0:
+            return [], {"reason": "no_lexical_evidence", "candidate_count": len(candidates)}
+        selected = candidates[:4]
+        if len(candidates) > 4 and scores.get(candidates[0].metadata["chunk_id"], 0) > scores.get(candidates[3].metadata["chunk_id"], 0) * 1.35:
+            selected = candidates[:2]
+        return selected, {
+            "reason": "retrieved", "candidate_count": len(candidates), "selected_count": len(selected),
+            "lexical_terms_found": lexical_terms_found, "reranker": self.reranker_status,
+            "dense_candidates": [{"chunk_id": item, "score": round(score, 4)} for item, score in dense[:5]],
+            "lexical_candidates": [{"chunk_id": item, "score": round(score, 4)} for item, score in lexical[:5]],
+        }
+
+    # --------------------------- generation + citations -----------------------
+    def _build_context(self, docs: Sequence[Document]) -> tuple[str, dict[str, Document]]:
+        labels: dict[str, Document] = {}
+        blocks: list[str] = []
+        for index, doc in enumerate(docs, start=1):
+            label, meta = f"S{index}", doc.metadata
+            labels[label] = doc
+            blocks.append(f"[{label}] {meta['title']} | section: {meta.get('section', 'Unknown')} | DOI: {meta.get('doi', 'not listed')}\n{doc.page_content}")
+        return "\n\n".join(blocks), labels
+
+    def _get_model(self, provider: str):
+        if provider == "openai":
+            if not self.openai_llm:
+                self.openai_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=self.openai_api_key)
+            return self.openai_llm
+        if provider == "groq":
+            if not self.groq_llm:
+                self.groq_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0, api_key=self.groq_api_key)
+            return self.groq_llm
+        return None
+
+    def _generate(self, question: str, context: str) -> str:
+        prompt = f"""You are FitScience Coach, an educational fitness and nutrition assistant.
+Use only the evidence excerpts below. Do not diagnose, prescribe, infer missing facts, or add general knowledge.
+
+Answer contract:
+- Give 1-4 concise factual bullet points.
+- Every bullet must end with source labels exactly like [S1].
+- Use a label only when its excerpt explicitly supports that bullet.
+- If evidence does not answer the question, say: "The available evidence snapshot does not answer this question."
+- Do not include a references section.
+
+Evidence excerpts:
+{context}
+
+Question: {question}
+Answer:"""
+        # Model gateway policy: primary OpenAI generation, then Groq only on a
+        # provider failure. The route is recorded in the trace for cost/quality analysis.
+        routes = []
+        if self.openai_api_key and OPENAI_AVAILABLE:
+            routes.append("openai")
+        if self.use_groq and self.groq_api_key and GROQ_AVAILABLE:
+            routes.append("groq")
+        self.last_generation_model = "corpus-only"
+        for provider in routes:
+            try:
+                response = self._get_model(provider).invoke(prompt)
+                self.last_generation_model = provider
+                return response.content.strip() if hasattr(response, "content") else str(response)
+            except Exception as exc:
+                print(f"{provider} generation failed; trying configured fallback: {type(exc).__name__}")
+        return ""
+
+    @staticmethod
+    def _fallback_answer(docs: Sequence[Document], question: str = "") -> str:
+        """Extract the most query-supported sentence when no generator is configured."""
+        query_terms = set(tokenize(question))
+        bullets, used_sources = [], set()
+        for index, doc in enumerate(docs, start=1):
+            source_id = doc.metadata.get("source_id")
+            if source_id in used_sources:
+                continue
+            sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", doc.page_content) if sentence.strip()]
+            if not sentences:
+                continue
+            sentence = max(
+                sentences,
+                key=lambda item: (len(query_terms & set(tokenize(item))), min(len(item.split()), 45)),
+            )
+            # Avoid displaying an arbitrary sentence when no words support it.
+            if query_terms and not (query_terms & set(tokenize(sentence))):
+                continue
+            bullets.append(f"- {sentence} [S{index}]")
+            used_sources.add(source_id)
+            if len(bullets) == 2:
+                break
+        return "\n".join(bullets) if bullets else "The available evidence snapshot does not answer this question."
+
+    def verify_answer_contract(self, answer: str, labels: dict[str, Document], question: str = "") -> tuple[str, dict[str, Any]]:
+        valid, rejected = [], []
+        for raw_line in answer.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            citations = re.findall(r"\[(S\d+)\]", line)
+            if not citations or any(citation not in labels for citation in citations):
+                rejected.append(line)
+                continue
+            claim_terms = set(tokenize(re.sub(r"\[S\d+\]", "", line)))
+            evidence_terms = set().union(*(set(tokenize(labels[citation].page_content)) for citation in citations))
+            if len(claim_terms & evidence_terms) < 2:
+                rejected.append(line)
+                continue
+            valid.append(line if line.startswith("-") else f"- {line}")
+        if not valid:
+            return self._fallback_answer(list(labels.values()), question), {"status": "fallback", "rejected_claims": rejected}
+        return "\n".join(valid), {"status": "passed", "rejected_claims": rejected}
+
+    # ---------------------------- observability/cache -------------------------
+    @staticmethod
+    def _cache_key(question: str) -> str:
+        return hashlib.sha256(question.strip().lower().encode()).hexdigest()
+
+    @staticmethod
+    def _write_trace(event: dict[str, Any]) -> None:
+        TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with TRACE_PATH.open("a") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _source_payload(doc: Document, index: int) -> dict[str, Any]:
+        meta = doc.metadata
+        return {
+            "label": f"S{index}", "chunk_id": meta["chunk_id"], "source_id": meta["source_id"],
+            "title": meta["title"], "url": meta["url"], "doi": meta.get("doi", ""),
+            "section": meta.get("section", ""), "published_year": meta.get("published_year"),
+            "evidence_level": meta.get("evidence_level", ""), "population": meta.get("population", ""),
+            "content_preview": doc.page_content[:280] + "…",
+        }
+
+    def query(self, question: str, conversation_history: Optional[Sequence[dict[str, str]]] = None) -> Dict[str, Any]:
+        start, trace_id = time.perf_counter(), uuid.uuid4().hex
+        safe_question = mask_pii(question.strip())
+        risk, reason = self.classify_query_risk(safe_question)
+        event: dict[str, Any] = {
+            "trace_id": trace_id, "timestamp": datetime.now(timezone.utc).isoformat(), "query": safe_question,
+            "prompt_version": PROMPT_VERSION, "model": self.llm or "corpus-only", "risk": risk, "risk_reason": reason,
+        }
+        if risk in {"blocked", "high"}:
+            event.update({"outcome": "abstained", "latency_ms": round((time.perf_counter() - start) * 1000, 1)})
+            self._write_trace(event)
+            return {"answer": self._safety_response(reason), "sources": [], "trace_id": trace_id, "status": "abstained"}
+        if not self.has_declared_coverage(safe_question):
+            event.update({"outcome": "insufficient_evidence", "coverage": "out_of_manifest",
+                          "latency_ms": round((time.perf_counter() - start) * 1000, 1)})
+            self._write_trace(event)
+            return {"answer": "This question is outside the topics covered by the current evidence snapshot, so I cannot answer it safely.",
+                    "sources": [], "trace_id": trace_id, "status": "insufficient_evidence", "cache_hit": False}
+        rewritten, cache_key = self.rewrite_query(safe_question, conversation_history), self._cache_key(safe_question)
+        if cache_key in self.exact_cache:
+            cached = dict(self.exact_cache[cache_key])
+            cached.update({"trace_id": trace_id, "cache_hit": True})
+            event.update({"outcome": "cache_hit", "latency_ms": round((time.perf_counter() - start) * 1000, 1)})
+            self._write_trace(event)
+            return cached
+        try:
+            docs, retrieval = self.retrieve(rewritten)
+            event.update({"rewritten_query": rewritten, "retrieval": retrieval})
+            if not docs:
+                result = {"answer": "I do not have sufficiently relevant evidence in this snapshot to answer that safely. Please try a more specific fitness or nutrition education question.",
+                          "sources": [], "trace_id": trace_id, "status": "insufficient_evidence", "cache_hit": False}
+            else:
+                context, labels = self._build_context(docs)
+                answer, verification = self.verify_answer_contract(
+                    self._generate(rewritten, context) or self._fallback_answer(docs, rewritten),
+                    labels,
+                    rewritten,
+                )
+                result = {"answer": answer, "sources": [self._source_payload(doc, i) for i, doc in enumerate(docs, 1)],
+                          "trace_id": trace_id, "status": "answered", "citation_verifier": verification, "cache_hit": False}
+                event["citation_verifier"] = verification
+                event["generation_model"] = self.last_generation_model
+            self.exact_cache[cache_key] = dict(result)
+            event.update({"outcome": result["status"], "retrieved_chunk_ids": [doc.metadata["chunk_id"] for doc in docs],
+                          "latency_ms": round((time.perf_counter() - start) * 1000, 1)})
+            self._write_trace(event)
+            return result
+        except Exception as exc:
+            event.update({"outcome": "error", "error": type(exc).__name__, "latency_ms": round((time.perf_counter() - start) * 1000, 1)})
+            self._write_trace(event)
+            return {"error": f"Query failed: {exc}", "trace_id": trace_id}
+
+    # Deterministic calculation tools remain outside LLM generation.
+    @staticmethod
+    def calculate_bmr(weight_kg: float, height_cm: float, age: int, gender: str) -> float:
+        if gender.lower() in {"male", "m", "man"}:
+            return round(88.362 + 13.397 * weight_kg + 4.799 * height_cm - 5.677 * age, 1)
+        if gender.lower() in {"female", "f", "woman"}:
+            return round(447.593 + 9.247 * weight_kg + 3.098 * height_cm - 4.330 * age, 1)
+        raise ValueError("Gender must be 'male' or 'female'")
+
+    @staticmethod
+    def calculate_tdee(bmr: float, activity_level: str) -> float:
+        multipliers = {"sedentary": 1.2, "lightly_active": 1.375, "moderately_active": 1.55, "very_active": 1.725, "extremely_active": 1.9}
+        if activity_level.lower() not in multipliers:
+            raise ValueError(f"Invalid activity level. Choose from: {list(multipliers)}")
+        return round(bmr * multipliers[activity_level.lower()], 1)

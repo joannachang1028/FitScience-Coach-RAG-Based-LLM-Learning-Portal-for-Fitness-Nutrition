@@ -1,181 +1,150 @@
 #!/usr/bin/env python3
-"""
-RAGAs Evaluation Script for FitScience Coach
-Using OpenAI API for reliable evaluation.
+"""Evaluate actual FitScience retrieval results, never supplied contexts.
+
+Run 'python src/build_evaluation_set.py' once, then run this script with
+'--offline'. Set OPENAI_API_KEY to additionally run RAGAS on actual passages.
 """
 
-import os
+from __future__ import annotations
+
+import argparse
 import json
-import warnings
-import pandas as pd
-from datasets import Dataset
-from ragas import evaluate
-from ragas.metrics import (
-    Faithfulness,
-    AnswerRelevancy,
-    ContextPrecision,
-    ContextRecall,
-    ContextRelevance,
-)
+import math
+import os
+import statistics
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 from rag_pipeline import FitScienceRAG
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-# ---------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------
-warnings.filterwarnings("ignore")
+ROOT = Path(__file__).resolve().parent.parent
+CASE_PATH = ROOT / "data" / "evaluation_cases.jsonl"
+RUNS_DIR = ROOT / "evaluation_runs"
 
-# OpenAI API Key - Set via environment variable or replace with your key
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "your-openai-api-key-here")
-if OPENAI_API_KEY != "your-openai-api-key-here":
-    os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
-# ---------------------------------------------------------------------
-# Evaluation dataset
-# ---------------------------------------------------------------------
-def create_evaluation_dataset():
-    return [
-        {
-            "question": "How much protein should I eat per day for muscle building?",
-            "ground_truth": "For resistance training, consume 1.6–2.2 g/kg body weight daily, spread across meals.",
-            "contexts": [
-                "Optimal intake for muscle growth is 1.6–2.2 g/kg/day distributed over multiple meals.",
-                "Protein distribution across the day enhances synthesis and recovery efficiency.",
-            ],
-        },
-        {
-            "question": "What is the best workout split for beginners?",
-            "ground_truth": "Full-body training three times per week is best for beginners before switching to upper/lower or push-pull-legs.",
-            "contexts": [
-                "Beginners progress best with full-body workouts 3 days per week.",
-                "This schedule balances stimulus and recovery across muscle groups.",
-            ],
-        },
-        {
-            "question": "How do I calculate my BMR and TDEE?",
-            "ground_truth": "Use the Harris–Benedict formula for BMR and multiply by activity factor (1.2–1.9) for TDEE.",
-            "contexts": [
-                "Harris–Benedict: Men = 88.362 + (13.397×wt) + (4.799×ht) – (5.677×age).",
-                "TDEE = BMR × activity (1.2–1.9 depending on lifestyle).",
-            ],
-        },
-        {
-            "question": "How much sleep do I need for optimal recovery?",
-            "ground_truth": "Adults 7–9 h; athletes 8–10 h. Deep sleep releases growth hormone aiding repair and immune function.",
-            "contexts": [
-                "Adults need 7–9 h; athletes 8–10 h.",
-                "Deep sleep supports muscle protein synthesis and hormone release.",
-            ],
-        },
-        {
-            "question": "What are the most important micronutrients for athletes?",
-            "ground_truth": "Iron, Vitamin D, Magnesium, Zinc, and B Vitamins are critical for performance and recovery.",
-            "contexts": [
-                "Iron for oxygen transport; Vitamin D for bone and muscle health.",
-                "Magnesium, Zinc, and B vitamins aid energy and immune functions.",
-            ],
-        },
-    ]
+def load_cases(path: Path = CASE_PATH) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError("Evaluation cases missing; run python src/build_evaluation_set.py.")
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
-# ---------------------------------------------------------------------
-# Collect RAG responses
-# ---------------------------------------------------------------------
-def get_rag_responses(evaluation_data):
-    print("🚀 Initializing FitScience Coach RAG System for evaluation…")
-    print("🔑 Using OpenAI API key for improved faithfulness")
+
+def reciprocal_rank(retrieved_source_ids: list[str], expected_source_ids: list[str]) -> float:
+    for rank, source_id in enumerate(retrieved_source_ids, start=1):
+        if source_id in expected_source_ids:
+            return 1 / rank
+    return 0.0
+
+
+def action_is_correct(expected: str, result: dict[str, Any]) -> bool:
+    if expected == "answerable":
+        return result.get("status") == "answered"
+    if expected == "insufficient_evidence":
+        return result.get("status") == "insufficient_evidence"
+    if expected in {"high_risk", "blocked"}:
+        return result.get("status") == "abstained"
+    return False
+
+
+def collect_actual_runs(cases: list[dict[str, Any]], enable_reranker: bool) -> list[dict[str, Any]]:
     rag = FitScienceRAG(
         use_groq=True,
-        openai_api_key=OPENAI_API_KEY if OPENAI_API_KEY != "your-openai-api-key-here" else None,
-        groq_api_key=os.environ.get("GROQ_API_KEY", "")
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        groq_api_key=os.getenv("GROQ_API_KEY"),
+        enable_reranker=enable_reranker,
     )
-    rag.initialize_system()
-    results = []
-    for i, q in enumerate(evaluation_data, 1):
-        print(f"📝 Query {i}: {q['question']}")
-        try:
-            r = rag.query(q["question"])
-            results.append({
-                "question": q["question"],
-                "answer": r["answer"],
-                "contexts": q["contexts"],
-                "ground_truth": q["ground_truth"],
-            })
-            print(f"✅ Answer {i} captured.")
-        except Exception as e:
-            print(f"❌ Query {i} failed: {e}")
-            results.append({
-                "question": q["question"],
-                "answer": f"Error: {e}",
-                "contexts": q["contexts"],
-                "ground_truth": q["ground_truth"],
-            })
-    return results
+    if not rag.initialize_system():
+        raise RuntimeError("FitScience RAG initialization failed")
+    rows = []
+    for case in cases:
+        started = time.perf_counter()
+        result = rag.query(case["question"])
+        sources = result.get("sources", [])
+        retrieved_ids, expected_ids = [source["source_id"] for source in sources], case["expected_source_ids"]
+        rows.append({
+            **case,
+            "status": result.get("status", "error"),
+            "answer": result.get("answer", result.get("error", "")),
+            # The key correction: use passages this query really retrieved.
+            "retrieved_contexts": [source["content_preview"] for source in sources],
+            "retrieved_chunk_ids": [source["chunk_id"] for source in sources],
+            "retrieved_source_ids": retrieved_ids,
+            "citation_verifier": result.get("citation_verifier", {}),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "action_correct": action_is_correct(case["expected_action"], result),
+            "retrieval_recall_at_k": int(bool(set(expected_ids) & set(retrieved_ids))) if expected_ids else None,
+            "reciprocal_rank": reciprocal_rank(retrieved_ids, expected_ids) if expected_ids else None,
+        })
+    return rows
 
-# ---------------------------------------------------------------------
-# RAGAS evaluation
-# ---------------------------------------------------------------------
-def run_ragas_evaluation():
-    print("🔬 Starting RAGAs Evaluation for FitScience Coach…")
-    print("🔑 Using OpenAI GPT-4o-mini (fast & reliable)")
-    
-    eval_data = create_evaluation_dataset()
-    print(f"📊 Dataset contains {len(eval_data)} questions")
-    responses = get_rag_responses(eval_data)
 
-    dataset = Dataset.from_dict({
-        "question": [r["question"] for r in responses],
-        "answer": [r["answer"] for r in responses],
-        "contexts": [r["contexts"] for r in responses],
-        "ground_truth": [r["ground_truth"] for r in responses],
-    })
-
-    metrics = [Faithfulness(), AnswerRelevancy(), ContextPrecision(), ContextRecall(), ContextRelevance()]
-    print("🎯 Metrics: Faithfulness, Answer Relevancy, Context Precision, Context Recall, Context Relevance")
-
-    # Initialize OpenAI models
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    print("✅ OpenAI models initialized")
-
-    # Run evaluation
-    try:
-        print("⚙️ Running RAGAS evaluation with OpenAI…")
-        result = evaluate(dataset, metrics=metrics, llm=llm, embeddings=embeddings)
-        print("✅ Evaluation completed successfully!")
-    except Exception as e:
-        print(f"❌ Evaluation failed: {e}")
-        return None
-
-    # Extract scores
-    print("\n🎉 RAGAS Evaluation Results:")
-    print("="*60)
-    scores_dict = result._scores_dict
-    for k, v in scores_dict.items():
-        val = v[0]
-        print(f"{k:22}: {val if not pd.isna(val) else 'NaN'}")
-
-    vals = [v[0] for v in scores_dict.values() if not pd.isna(v[0])]
-    overall = sum(vals)/len(vals) if vals else float("nan")
-    print(f"\n🏁 Overall RAGAS Score: {overall:.3f}")
-
-    out = {
-        "metrics": {k: (v[0] if not pd.isna(v[0]) else None) for k, v in scores_dict.items()},
-        "overall_score": overall,
-        "details": {"system": "FitScience Coach v1.0", "model": "gpt-4o-mini", "questions": len(dataset)},
+def offline_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    answerable = [row for row in rows if row["expected_action"] == "answerable"]
+    abstentions = [row for row in rows if row["expected_action"] != "answerable"]
+    recalls, ranks = [row["retrieval_recall_at_k"] for row in answerable], [row["reciprocal_rank"] for row in answerable]
+    citation_passes = [row["citation_verifier"].get("status") == "passed" for row in answerable if row["status"] == "answered"]
+    latencies = sorted(row["latency_ms"] for row in rows)
+    return {
+        "case_count": len(rows),
+        "label_warning": "Draft labels require domain review; these are not clinical-accuracy claims.",
+        "action_accuracy": sum(row["action_correct"] for row in rows) / len(rows),
+        "retrieval_recall_at_k": sum(recalls) / len(recalls) if recalls else None,
+        "mrr": sum(ranks) / len(ranks) if ranks else None,
+        "citation_contract_pass_rate": sum(citation_passes) / len(citation_passes) if citation_passes else None,
+        "safe_abstention_accuracy": sum(row["action_correct"] for row in abstentions) / len(abstentions) if abstentions else None,
+        "p50_latency_ms": statistics.median(latencies),
+        "p95_latency_ms": latencies[max(0, math.ceil(len(latencies) * .95) - 1)],
     }
-    with open("ragas_results/ragas_evaluation_results.json", "w") as f:
-        json.dump(out, f, indent=2)
-    print("💾 Saved → ragas_results/ragas_evaluation_results.json")
-    return out
 
-# ---------------------------------------------------------------------
+
+def run_ragas_on_actual_contexts(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Optional LLM-as-judge evaluation, safely skipped if key/deps are unavailable."""
+    if not os.getenv("OPENAI_API_KEY"):
+        return None
+    try:
+        from datasets import Dataset
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+        from ragas import evaluate
+        from ragas.metrics import AnswerRelevancy, ContextPrecision, Faithfulness
+    except ImportError as exc:
+        print(f"RAGAS skipped: missing optional dependency ({exc})")
+        return None
+    evaluable = [row for row in rows if row["expected_action"] == "answerable" and row["retrieved_contexts"]]
+    if not evaluable:
+        return None
+    dataset = Dataset.from_dict({
+        "question": [row["question"] for row in evaluable],
+        "answer": [row["answer"] for row in evaluable],
+        "contexts": [row["retrieved_contexts"] for row in evaluable],
+    })
+    result = evaluate(
+        dataset,
+        metrics=[Faithfulness(), AnswerRelevancy(), ContextPrecision()],
+        llm=ChatOpenAI(model="gpt-4o-mini", temperature=0),
+        embeddings=OpenAIEmbeddings(model="text-embedding-3-small"),
+    )
+    return {metric: float(values[0]) for metric, values in result._scores_dict.items()}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--reranker", action="store_true", help="Enable optional cross-encoder reranking.")
+    parser.add_argument("--offline", action="store_true", help="Skip paid RAGAS judging.")
+    args = parser.parse_args()
+    cases = load_cases()
+    if len(cases) < 100:
+        raise RuntimeError(f"Expected at least 100 cases, found {len(cases)}")
+    rows = collect_actual_runs(cases, enable_reranker=args.reranker)
+    summary = offline_summary(rows)
+    if not args.offline:
+        summary["ragas_actual_context_metrics"] = run_ragas_on_actual_contexts(rows)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    RUNS_DIR.mkdir(exist_ok=True)
+    (RUNS_DIR / f"run_{timestamp}.json").write_text(json.dumps({"summary": summary, "rows": rows}, indent=2))
+    (RUNS_DIR / "latest_summary.json").write_text(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2))
+
+
 if __name__ == "__main__":
-    res = run_ragas_evaluation()
-    if res:
-        print("\n📊 Summary")
-        print("="*60)
-        print(f"Overall Score: {res['overall_score']:.3f}")
-        for k, v in res["metrics"].items():
-            print(f"{k:22}: {v}")
-    else:
-        print("⚠️ RAGAS evaluation did not complete.")
+    main()

@@ -1,0 +1,102 @@
+[
+  {
+    "source_id": "protein_meta_2018",
+    "title": "Protein supplementation and resistance training-induced gains in healthy adults",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5867436/",
+    "doi": "10.1136/bjsports-2017-097608",
+    "published_year": 2018,
+    "evidence_level": "systematic review and meta-analysis",
+    "population": "healthy adults performing resistance exercise training",
+    "topics": ["protein", "resistance training", "muscle hypertrophy"]
+  },
+  {
+    "source_id": "acsm_resistance_2026",
+    "title": "ACSM Position Stand: Resistance Training Prescription for Healthy Adults",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12965823/",
+    "doi": "10.1249/MSS.0000000000003839",
+    "published_year": 2026,
+    "evidence_level": "professional position stand and overview of reviews",
+    "population": "healthy adults",
+    "topics": ["resistance training", "progression", "programming"]
+  },
+  {
+    "source_id": "issn_body_comp_2017",
+    "title": "International Society of Sports Nutrition position stand: diets and body composition",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5470183/",
+    "doi": "10.1186/s12970-017-0174-y",
+    "published_year": 2017,
+    "evidence_level": "professional position stand",
+    "population": "healthy adults and athletes; recommendations vary by training and energy status",
+    "topics": ["body composition", "protein", "energy balance"]
+  },
+  {
+    "source_id": "issn_nutrient_timing_2008",
+    "title": "International Society of Sports Nutrition position stand: nutrient timing",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC2575187/",
+    "doi": "10.1186/1550-2783-5-17",
+    "published_year": 2008,
+    "evidence_level": "professional position stand",
+    "population": "exercising adults",
+    "topics": ["protein", "nutrient timing", "recovery"]
+  },
+  {
+    "source_id": "neat_review_2018",
+    "title": "Non-exercise activity thermogenesis (NEAT): a component of total daily energy expenditure",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6058072/",
+    "doi": "10.1016/j.gde.2018.02.001",
+    "published_year": 2018,
+    "evidence_level": "narrative review",
+    "population": "adults",
+    "topics": ["NEAT", "energy expenditure", "activity"]
+  },
+  {
+    "source_id": "micronutrients_review_2015",
+    "title": "Micronutrients and athletic performance: a review",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC4540168/",
+    "doi": "10.3390/nu7095358",
+    "published_year": 2015,
+    "evidence_level": "narrative review",
+    "population": "athletes and physically active people",
+    "topics": ["micronutrients", "athletes", "nutrition"]
+  },
+  {
+    "source_id": "energy_balance_2016",
+    "title": "Energy balance and body composition",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5095961/",
+    "doi": "10.1016/j.physbeh.2016.08.016",
+    "published_year": 2016,
+    "evidence_level": "review",
+    "population": "adults",
+    "topics": ["energy balance", "body composition", "calories"]
+  },
+  {
+    "source_id": "periodization_review_2014",
+    "title": "Periodization of resistance training for strength and hypertrophy",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC4215195/",
+    "doi": "10.2478/hukin-2014-0048",
+    "published_year": 2014,
+    "evidence_level": "review",
+    "population": "resistance-trained adults",
+    "topics": ["periodization", "resistance training", "programming"]
+  },
+  {
+    "source_id": "supplements_review_2021",
+    "title": "Dietary Supplements—For Whom? Current State of Knowledge",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8431076/",
+    "doi": "10.3390/nu13092912",
+    "published_year": 2021,
+    "evidence_level": "review",
+    "population": "general adult populations; condition-specific evidence varies",
+    "topics": ["supplements", "nutrition", "safety"]
+  },
+  {
+    "source_id": "micronutrient_position_2018",
+    "title": "Academy of Nutrition and Dietetics Position: Micronutrient Supplementation",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11792875/",
+    "doi": "10.1016/j.jand.2018.07.022",
+    "published_year": 2018,
+    "evidence_level": "professional position paper",
+    "population": "general populations; increased-risk groups require individual assessment",
+    "topics": ["micronutrients", "supplements", "safety"]
+  }
+]
