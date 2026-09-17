@@ -83,7 +83,7 @@ def tokenize(text: str) -> list[str]:
 
 def mask_pii(text: str) -> str:
     text = re.sub(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b", "[EMAIL]", text)
-    return re.sub(r"\b(?:\+?\d[\d .()-]{7,}\d)\b", "[PHONE]", text)
+    return re.sub(r"(?<!\w)(?:\+?\d[\d .()-]{7,}\d)\b", "[PHONE]", text)
 
 
 class FitScienceRAG:
@@ -96,15 +96,33 @@ class FitScienceRAG:
         groq_api_key: Optional[str] = None,
         enable_reranker: bool = False,
         reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        evidence_path: Path = EVIDENCE_PATH,
+        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+        retrieval_mode: str = "hybrid",
+        candidate_k: int = 16,
+        top_k: int = 6,
+        adaptive_top_k: bool = False,
+        openai_model: str = "gpt-4.1-mini",
+        groq_model: str = "openai/gpt-oss-20b",
     ) -> None:
         self.use_groq = use_groq
-        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
-        self.groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY", "")
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "") if openai_api_key is None else openai_api_key
+        self.groq_api_key = os.getenv("GROQ_API_KEY", "") if groq_api_key is None else groq_api_key
         self.enable_reranker = enable_reranker
         self.reranker_model = reranker_model
+        self.evidence_path = Path(evidence_path)
+        self.embedding_model = embedding_model
+        if retrieval_mode not in {"dense", "bm25", "hybrid"}:
+            raise ValueError("retrieval_mode must be dense, bm25, or hybrid")
+        self.retrieval_mode = retrieval_mode
+        self.candidate_k = candidate_k
+        self.top_k = top_k
+        self.adaptive_top_k = adaptive_top_k
+        self.openai_model = openai_model
+        self.groq_model = groq_model
         self.reranker = None
         self.reranker_status = "disabled"
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={"device": "cpu"})
+        self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model, model_kwargs={"device": "cpu"})
         self.vectorstore: Optional[FAISS] = None
         self.documents: list[Document] = []
         self.doc_by_id: dict[str, Document] = {}
@@ -115,6 +133,7 @@ class FitScienceRAG:
         self.openai_llm = None
         self.groq_llm = None
         self.last_generation_model = "corpus-only"
+        self.last_generation_usage: dict[str, Any] = {}
         self.exact_cache: dict[str, dict[str, Any]] = {}
 
     # ------------------------------- ingestion --------------------------------
@@ -172,7 +191,7 @@ class FitScienceRAG:
 
     def initialize_system(self) -> bool:
         try:
-            self.load_evidence_corpus()
+            self.load_evidence_corpus(self.evidence_path)
             self.build_vectorstore()
             self._setup_models()
             return True
@@ -242,24 +261,29 @@ class FitScienceRAG:
     def retrieve(self, question: str) -> tuple[list[Document], dict[str, Any]]:
         if not self.vectorstore:
             raise RuntimeError("RAG system is not initialized")
-        lexical, dense = self._bm25_search(question, 16), self._dense_search(question, 16)
-        fused, query_terms = self._rrf([lexical, dense]), set(tokenize(question))
+        lexical = self._bm25_search(question, self.candidate_k)
+        dense = self._dense_search(question, self.candidate_k)
+        rankings = {"dense": [dense], "bm25": [lexical], "hybrid": [lexical, dense]}[self.retrieval_mode]
+        fused, query_terms = self._rrf(rankings), set(tokenize(question))
         ordered_ids = sorted(fused, key=lambda doc_id: (self._metadata_match(self.doc_by_id[doc_id], query_terms), fused[doc_id]), reverse=True)
-        candidates = [self.doc_by_id[doc_id] for doc_id in ordered_ids[:16]]
+        candidates = [self.doc_by_id[doc_id] for doc_id in ordered_ids[:self.candidate_k]]
         scores = {doc_id: fused[doc_id] for doc_id in ordered_ids}
         if self.reranker and candidates:
             rerank_scores = self.reranker.predict([(question, doc.page_content) for doc in candidates])
             ranked = sorted(zip(rerank_scores, candidates), key=lambda pair: pair[0], reverse=True)
             candidates, scores = [doc for _, doc in ranked], {doc.metadata["chunk_id"]: float(score) for score, doc in ranked}
         lexical_terms_found = len(set(term for doc_id, _ in lexical for term in self.doc_term_counts[doc_id]) & query_terms)
-        if lexical_terms_found == 0:
+        if self.retrieval_mode != "dense" and lexical_terms_found == 0:
             return [], {"reason": "no_lexical_evidence", "candidate_count": len(candidates)}
-        selected = candidates[:4]
-        if len(candidates) > 4 and scores.get(candidates[0].metadata["chunk_id"], 0) > scores.get(candidates[3].metadata["chunk_id"], 0) * 1.35:
-            selected = candidates[:2]
+        selected = candidates[:self.top_k]
+        if self.adaptive_top_k and self.top_k >= 4 and len(candidates) > self.top_k:
+            boundary = candidates[self.top_k - 1].metadata["chunk_id"]
+            if scores.get(candidates[0].metadata["chunk_id"], 0) > scores.get(boundary, 0) * 1.35:
+                selected = candidates[:2]
         return selected, {
             "reason": "retrieved", "candidate_count": len(candidates), "selected_count": len(selected),
             "lexical_terms_found": lexical_terms_found, "reranker": self.reranker_status,
+            "retrieval_mode": self.retrieval_mode, "top_k": self.top_k, "adaptive_top_k": self.adaptive_top_k,
             "dense_candidates": [{"chunk_id": item, "score": round(score, 4)} for item, score in dense[:5]],
             "lexical_candidates": [{"chunk_id": item, "score": round(score, 4)} for item, score in lexical[:5]],
         }
@@ -277,11 +301,11 @@ class FitScienceRAG:
     def _get_model(self, provider: str):
         if provider == "openai":
             if not self.openai_llm:
-                self.openai_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=self.openai_api_key)
+                self.openai_llm = ChatOpenAI(model=self.openai_model, temperature=0, api_key=self.openai_api_key)
             return self.openai_llm
         if provider == "groq":
             if not self.groq_llm:
-                self.groq_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0, api_key=self.groq_api_key)
+                self.groq_llm = ChatGroq(model=self.groq_model, temperature=0, api_key=self.groq_api_key)
             return self.groq_llm
         return None
 
@@ -309,11 +333,42 @@ Answer:"""
         if self.use_groq and self.groq_api_key and GROQ_AVAILABLE:
             routes.append("groq")
         self.last_generation_model = "corpus-only"
+        self.last_generation_usage = {}
         for provider in routes:
             try:
                 response = self._get_model(provider).invoke(prompt)
-                self.last_generation_model = provider
-                return response.content.strip() if hasattr(response, "content") else str(response)
+                model_name = self.openai_model if provider == "openai" else self.groq_model
+                self.last_generation_model = f"{provider}:{model_name}"
+                response_text = response.content.strip() if hasattr(response, "content") else str(response)
+                usage = getattr(response, "usage_metadata", None) or {}
+                if not usage:
+                    raw_usage = getattr(response, "response_metadata", {}).get("token_usage", {})
+                    usage = {
+                        "input_tokens": raw_usage.get("prompt_tokens", 0),
+                        "output_tokens": raw_usage.get("completion_tokens", 0),
+                        "total_tokens": raw_usage.get("total_tokens", 0),
+                    }
+                estimated = not bool(usage.get("total_tokens"))
+                if estimated:
+                    try:
+                        import tiktoken
+                        encoding = tiktoken.encoding_for_model(model_name)
+                        input_tokens = len(encoding.encode(prompt))
+                        output_tokens = len(encoding.encode(response_text))
+                    except Exception:
+                        input_tokens = math.ceil(len(prompt) / 4)
+                        output_tokens = math.ceil(len(response_text) / 4)
+                    usage = {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    }
+                self.last_generation_usage = {
+                    key: int(value) for key, value in usage.items()
+                    if key in {"input_tokens", "output_tokens", "total_tokens"} and value is not None
+                }
+                self.last_generation_usage["estimated"] = estimated
+                return response_text
             except Exception as exc:
                 print(f"{provider} generation failed; trying configured fallback: {type(exc).__name__}")
         return ""
@@ -424,9 +479,12 @@ Answer:"""
                     rewritten,
                 )
                 result = {"answer": answer, "sources": [self._source_payload(doc, i) for i, doc in enumerate(docs, 1)],
-                          "trace_id": trace_id, "status": "answered", "citation_verifier": verification, "cache_hit": False}
+                          "trace_id": trace_id, "status": "answered", "citation_verifier": verification,
+                          "generation_model": self.last_generation_model,
+                          "generation_usage": self.last_generation_usage, "cache_hit": False}
                 event["citation_verifier"] = verification
                 event["generation_model"] = self.last_generation_model
+                event["generation_usage"] = self.last_generation_usage
             self.exact_cache[cache_key] = dict(result)
             event.update({"outcome": result["status"], "retrieved_chunk_ids": [doc.metadata["chunk_id"] for doc in docs],
                           "latency_ms": round((time.perf_counter() - start) * 1000, 1)})

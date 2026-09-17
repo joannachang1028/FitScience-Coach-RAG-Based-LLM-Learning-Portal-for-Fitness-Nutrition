@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fitscience.local/schemas/evaluation-seed-label-v1.json",
+  "title": "FitScience evaluation seed label",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "seed_id",
+    "question",
+    "category",
+    "risk_level",
+    "expected_action",
+    "expected_source_ids",
+    "gold_chunk_ids",
+    "reference_answer",
+    "required_claims",
+    "disallowed_claims",
+    "candidate_reason",
+    "label_status",
+    "reviewer_decision",
+    "reviewer_notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "seed_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "enum": [
+        "evidence_retrieval",
+        "coverage_boundary",
+        "health_safety",
+        "prompt_injection"
+      ]
+    },
+    "risk_level": {
+      "enum": ["low", "medium", "high"]
+    },
+    "expected_action": {
+      "enum": [
+        "answerable",
+        "insufficient_evidence",
+        "high_risk",
+        "blocked"
+      ]
+    },
+    "expected_source_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "gold_chunk_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[^:]+::c[0-9]+$"
+      },
+      "uniqueItems": true
+    },
+    "reference_answer": {
+      "type": "string"
+    },
+    "required_claims": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "disallowed_claims": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "candidate_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "label_status": {
+      "enum": [
+        "pending_human_review",
+        "approved",
+        "needs_revision",
+        "rejected"
+      ]
+    },
+    "reviewer_decision": {
+      "enum": ["", "accept", "revise", "reject"]
+    },
+    "reviewer_notes": {
+      "type": "string"
+    }
+  }
+}

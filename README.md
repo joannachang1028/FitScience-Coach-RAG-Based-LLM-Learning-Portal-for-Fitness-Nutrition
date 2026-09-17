@@ -1,469 +1,185 @@
-# FitScience Coach - Personal Learning Portal
+# FitScience Coach — Evidence-Grounded RAG
 
-Most fitness apps give advice. FitScience Coach shows you why.
-This project explores how large language models can be safely applied in health education by forcing every answer to come from real research—no guesswork, no vibes.
-By combining semantic search, citation-aware generation, and rigorous evaluation, the system demonstrates how AI can make evidence-based knowledge accessible without sacrificing accuracy.
+FitScience Coach is a fitness and nutrition education assistant. Its answer path
+retrieves from a fixed snapshot of open-access evidence, generates concise claims,
+and requires every generated bullet to cite the retrieved passage that supports it.
 
-> **RAG v2 status (September 2026):** The answer path indexes a local snapshot
-> of section-level open-access evidence, uses hybrid FAISS + BM25 retrieval,
-> requires source labels on generated claims, and records safety/retrieval traces.
-> The prior 0.857 aggregate is a legacy prototype result because it evaluated
-> hand-written contexts, not actual retrieved passages. See
-> [RAG_v2_Implementation_and_Baseline.md](reports/RAG_v2_Implementation_and_Baseline.md).
+> This is an engineering portfolio project, not a medical device. Evaluation
+> scores are regression metrics on a small human-reviewed set; they are not
+> clinical accuracy.
 
-## Project Overview
+## Current system
 
-**FitScience Coach** helps users learn evidence-based fitness and nutrition through:
-- Interactive Q&A with citations
-- Curated learning corpus from academic papers, guidelines, and expert podcasts
-- Progress tracking and personalized recommendations
-- Modular learning paths covering training, nutrition, and health
-
-## 🎬 Demo
-
-https://github.com/user-attachments/assets/866f51be-c0ed-4005-a195-36bdfff0ea09
-
-
-## Learning Objectives
-
-1. **Design** a weekly training plan with progression, rest, and goal alignment
-2. **Synthesize** nutrition targets (protein, carbs, fat, calories) with training goals, lifestyle, and preferences  
-3. **Identify** food choices to meet daily calorie and micronutrient needs (vitamins, minerals)
-4. **Calculate** daily calorie consumption based on body goals (fat loss, muscle gain, maintenance) using BMR and NEAT data
-
-## System Architecture
-
-### High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    FITSCIENCE COACH SYSTEM                      │
-│              Personal Learning Portal (PLP)                     │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-        ┌─────────────────────────────────────────┐
-        │         USER INTERFACE LAYER            │
-        │         (Streamlit Web App)             │
-        └─────────────────────────────────────────┘
-                              │
-                              ▼
-        ┌─────────────────────────────────────────┐
-        │           RAG PIPELINE LAYER            │
-        │    (Query → Retrieve → Generate)        │
-        └─────────────────────────────────────────┘
-                              │
-                ┌─────────────┼─────────────┐
-                ▼             ▼             ▼
-        ┌───────────┐  ┌───────────┐  ┌───────────┐
-        │  VECTOR   │  │   LLM     │  │  CORPUS   │
-        │   STORE   │  │  ENGINE   │  │   DATA    │
-        │  (FAISS)  │  │(GPT/Groq) │  │ (23 src)  │
-        └───────────┘  └───────────┘  └───────────┘
+```text
+User question
+  → PII masking + prompt-injection / medical-risk routing
+  → coverage check
+  → all-MiniLM-L6-v2 query embedding (384 dimensions)
+  → FAISS dense retrieval + in-process BM25
+  → reciprocal-rank fusion + metadata preference
+  → fixed top-6 evidence chunks
+  → GPT-4.1-mini grounded generation
+  → sentence-level [S1] citation contract
+  → JSONL trace + exact in-process cache
 ```
 
-### Detailed RAG Pipeline
+The retriever indexes 434 section-level chunks from 8 verified PMC articles and
+position papers. Chunks preserve source ID, URL, DOI, publication year, evidence
+level, population, section, and exact text. The older 23-row curated CSV remains
+for the learning-portal UI and project history; it is not part of the current RAG
+answer path.
 
-```
-User Query
-    ↓
-[1] Query Processing
-    ↓
-[2] Embedding Generation (HuggingFace all-MiniLM-L6-v2)
-    ↓
-[3] Vector Similarity Search (FAISS, top-k=8)
-    ↓
-[4] Context Augmentation
-    ↓
-[5] LLM Generation (GPT-4o-mini / Groq Llama)
-    ↓
-[6] Citation Processing
-    ↓
-[7] Response Display with Sources
-```
+Primary generation uses GPT-4.1-mini when `OPENAI_API_KEY` is configured. Groq
+`openai/gpt-oss-20b` is a provider-failure fallback when `GROQ_API_KEY` is also
+configured, but its current account rate limit prevented a complete ablation.
+Without an available model, the system returns a directly extracted source
+sentence rather than inventing an answer.
 
-### Data Flow Diagram
+## Why these defaults
 
-```
-┌──────────────┐
-│   User       │
-│   Input      │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────────────────────────────────────┐
-│  Streamlit Interface                         │
-│  • Ask Coach Tab                             │
-│  • BMR Calculator Tab                        │
-│  • Courses Tab                               │
-│  • Query History Tab                         │
-└──────┬───────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────┐
-│  RAG Pipeline (rag_pipeline.py)              │
-│  ┌────────────────────────────────────────┐  │
-│  │ 1. Load Corpus (23 sources)           │  │
-│  │ 2. Text Chunking (1000 chars)         │  │
-│  │ 3. Generate Embeddings (384 dims)     │  │
-│  │ 4. Build FAISS Index                  │  │
-│  └────────────────────────────────────────┘  │
-└──────┬───────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────┐
-│  Vector Store (FAISS)                        │
-│  • 23 document embeddings                    │
-│  • Cosine similarity search                  │
-│  • Fast retrieval (< 100ms)                  │
-└──────┬───────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────┐
-│  LLM Generation                              │
-│  ┌────────────────────────────────────────┐  │
-│  │ Primary: OpenAI GPT-4o-mini (optional)│  │
-│  │ • Temperature: 0.0                    │  │
-│  │ • Strict grounding prompt             │  │
-│  │                                       │  │
-│  │ Default: Groq Llama (free cloud)      │  │
-│  │ • No local install                    │  │
-│  │ • Free tier at console.groq.com       │  │
-│  │ • Host configures .env; users use app │  │
-│  └────────────────────────────────────────┘  │
-└──────┬───────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────┐
-│  Response Processing                         │
-│  • Extract citations                         │
-│  • Format sources                            │
-│  • Add relevance scores                      │
-└──────┬───────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────┐
-│  User Interface Display                      │
-│  • Green answer box                          │
-│  • Expandable sources                        │
-│  • Query history tracking                    │
-└──────────────────────────────────────────────┘
-```
+Every experiment used the same approved labels and fixed all variables except the
+one named in the table. Full results and limitations are in
+[Ablation Results](reports/Ablation_Results_2026-09-16.md).
 
-### Components:
-- **Corpus**: 23 evidence-based sources (papers, guidelines, podcasts)
-- **Embeddings**: Sentence Transformers (all-MiniLM-L6-v2, 384 dimensions)
-- **Vector Store**: FAISS for fast similarity search
-- **LLM**: Groq Llama (default, free) — OpenAI GPT-4o-mini optional for higher faithfulness
-- **Interface**: Streamlit web app with 4 interactive tabs
+| Decision | Selected | Observed trade-off |
+|---|---|---|
+| Chunking | 180 words / 35 overlap | Best evidence F1 and source recall versus 100/20 and 300/50 |
+| Embedding | all-MiniLM-L6-v2, 384-d | Best evidence F1/source recall; multilingual model improved strict chunk hits but was slower |
+| Retrieval | FAISS + BM25 RRF, fixed top-6 | Full-set source recall 1.000 and evidence F1 0.232; average context grew from 536 to 915 words |
+| Generator | GPT-4.1-mini | Better relevance/citation compliance in the 12-case run; about 25% higher p50 latency and 2.67× list token price versus GPT-4o-mini |
 
-### Current evaluation baseline
+No agentic RAG was added. With fixed top-6, source recall reached 1.000 and the
+canonical RAGAS context recall reached 0.944. The remaining weaknesses are answer
+relevance, small-set uncertainty, a ketogenic-diet coverage boundary, and domain
+validation—not evidence that multi-agent orchestration is needed.
 
-- **Corpus:** 503 section-level chunks from 10 open-access evidence sources
-- **Evaluation:** 120 versioned draft cases using actual retrieved passages
-- **Offline baseline:** recall@k 0.889, MRR 0.821, safe-abstention accuracy 0.875
-- **Important:** These are engineering regression metrics, not clinical-accuracy claims.
+## Evaluation
 
----
+The evaluation set contains 20 human-approved semantic seeds expanded into 120
+versioned query variants:
 
-## 📁 Project Structure
+- 12 answerable evidence questions with approved source IDs, gold chunks,
+  reference answers, required claims, and disallowed claims;
+- 3 insufficient-evidence topics;
+- 4 high-risk medical/vulnerable-population questions;
+- 1 prompt-injection case.
 
-```
-Application-of-NLX-LLM-Personal-Learning-Portal/
-│
-├── README.md                                  # 📄 Project overview and documentation
-├── requirements.txt                           # 📦 Python dependencies
-│
-├── data/                                      # 📊 Data files
-│   └── learning_corpus.csv                    # 23 curated sources
-│
-├── src/                                       # 💻 Source code
-│   ├── rag_pipeline.py                        # Core RAG system implementation
-│   ├── streamlit_app.py                       # Streamlit web interface
-│   ├── ingest_evidence.py                     # Open-access evidence snapshot builder
-│   ├── build_evaluation_set.py                # 120-case versioned regression set
-│   └── ragas_evaluation_v3.py                 # Actual-context RAGAS/offline evaluator
-│
-├── diagrams/                                  # 📐 System architecture
-│   └── system_architecture.md                 # Detailed architecture documentation
-│
-├── reports/                                   # 📑 Documentation and reports
-│   ├── Final_Report.md                        # Comprehensive final report
-│   ├── Evaluation_Log_and_Samples.md          # Detailed evaluation with samples
-│   ├── RAG_Evaluation_and_Improvements.md     # Complete iterative improvement journey
-│   │
-│   ├── Domain_Learning_Goals.md               # Domain definition & learning objectives (Step 1)
-│   └── PLP_Features_To_Adopt.md               # PLP feature analysis (Step 2)
-│
-└── data/
-    ├── evidence_sources.json                  # Source manifest with DOI and scope
-    ├── evidence_corpus.jsonl                  # Section-level evidence snapshot
-    └── evaluation_cases.jsonl                 # 120 draft regression cases
-```
+Latest full 120-case offline retrieval regression with the selected top-6 policy:
 
-### Directory Organization
+| Metric | Result |
+|---|---:|
+| Action accuracy | 0.950 |
+| Expected-source recall@k | 1.000 |
+| Gold-chunk recall@k | 0.270 |
+| Gold-chunk MRR | 0.321 |
+| Chunk-boundary-independent evidence trigram F1 | 0.232 |
+| Safe-abstention accuracy | 0.875 |
+| Mean retrieved context | 915 words |
+| Local retrieval p50 / p95 | 5.9 / 6.9 ms |
 
-** `data/`** - Core data files
-- `learning_corpus.csv` - 23 curated sources (Academic Papers, Podcasts, Government Resources)
+Canonical 12-answerable-case RAGAS run for GPT-4.1-mini with actual retrieved
+contexts:
 
-** `src/`** - Source code (3 files)
-- `rag_pipeline.py` - RAG system with Groq Llama (default) + optional OpenAI GPT-4o-mini
-- `streamlit_app.py` - Interactive web interface with 4 tabs (Courses, Ask Coach, BMR Calculator, Query History)
-- `ragas_evaluation_v3.py` - Automated RAGAs evaluation script
+| Metric | Result |
+|---|---:|
+| Faithfulness | 1.000 |
+| Answer relevancy | 0.593 |
+| Context precision | 0.949 |
+| Context recall | 0.944 |
 
-** `diagrams/`** - System architecture (1 file)
-- `system_architecture.md` - Comprehensive architecture documentation with data flow diagrams
+The historical `0.857` under `ragas_results/` evaluated five examples with
+prewritten contexts. It is retained as project history but must not be presented
+as current retrieval performance or clinical correctness.
 
-** `reports/`** - Documentation (5 files)
-- `Final_Report.md` - Complete project report with architecture, evaluation, and reflections
-- `Evaluation_Log_and_Samples.md` - RAGAs results and sample queries
-- `Domain_Learning_Goals.md` - Learning domain, questions, and objectives (Step 1)
-- `PLP_Features_To_Adopt.md` - Analyzed PLP features (Step 2)
-- `RAG_Evaluation_and_Improvements.md` - Complete iterative improvement journey (v1.0 → v3.0)
+## Safety and observability
 
-** `ragas_results/`** - Legacy prototype evaluation artifacts
-- `ragas_evaluation_results.json` - Historical 0.857 aggregate; not valid v2 retrieval evidence
-- `ragas_aggregate_results.json` - Aggregated metrics across all samples
-- `ragas_scores_per_sample.csv` - Detailed per-sample evaluation scores
+- Masks email addresses and phone numbers before retrieval and tracing.
+- Blocks common prompt-injection phrases before embedding or retrieval.
+- Abstains on injury, pregnancy, medications, eating disorders, minors, and other
+  high-risk health contexts.
+- Rejects topics outside the evidence manifest.
+- Records query rewrite, retrieved chunk IDs, retrieval mode, citation-verifier
+  result, selected provider/model, estimated token usage, outcome, and latency.
+- Requires `[S1]`-style labels on every generated bullet; unsupported or malformed
+  lines are removed, with a source-excerpt fallback if no line survives.
 
----
+## Quick start
 
-## Quick Start
-
-### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
-```
 
-### 2. Build or refresh the evidence snapshot
-~~~bash
+# Optional: refresh source snapshot. The committed snapshot is already usable.
 python src/ingest_evidence.py
+
+python src/validate_evaluation_labels.py
 python src/build_evaluation_set.py
-~~~
-
-### 3. Configure API Key (host only — users do not need to configure anything)
-**Host only:** Create a `.env` file with your Groq API key (free at [console.groq.com](https://console.groq.com)):
-```
-GROQ_API_KEY=gsk_your-key-here
-```
-**Users:** No API key configuration required. Once the host has set up `.env`, users simply open the app and start learning—no sign-up, keys, or setup.
-
-### 4. Run the Streamlit App
-```bash
 streamlit run src/streamlit_app.py
 ```
 
-### 5. Access the Interface
-Open your browser to `http://localhost:8501`
+Create `.env` on the host; never commit it:
 
----
-
-## Core Features
-
-### 1. Intelligent Q&A System
-**LLM Approach** (host-configured; users need no API keys):
-- **Groq Llama** (Default): Free cloud API — host sets `GROQ_API_KEY` in `.env`; users open the app and ask questions.
-- **OpenAI GPT-4o-mini** (Optional): Host adds `OPENAI_API_KEY` for higher faithfulness
-- **Corpus-only mode**: Safe fallback with direct source extraction when no LLM is configured
-
-**Key Capabilities**:
-- Evidence-based answers grounded in curated research
-- Automatic source citations with URLs and metadata
-- Top-8 relevant document retrieval using FAISS
-- Adaptive search: falls back to broader terms if no results found
-- Conservative language: "According to [source]..." for transparency
-
-### 2. BMR & TDEE Calculator
-**Harris-Benedict Equation Implementation**:
-- Calculate Basal Metabolic Rate (BMR) based on:
-  - Weight (kg), Height (cm), Age, Gender
-- Calculate Total Daily Energy Expenditure (TDEE) with activity multipliers:
-  - Sedentary (1.2x)
-  - Lightly Active (1.375x)
-  - Moderately Active (1.55x)
-  - Very Active (1.725x)
-  - Extremely Active (1.9x)
-
-### 3. Learning Corpus Management
-**23 Evidence-Based Sources**:
-- **Academic Papers** (9): Protein requirements, BMR calculations, training volume
-- **Podcasts** (8): Expert interviews on fitness, nutrition, and health
-- **Government Resources** (6): USDA MyPlate, NIH, NHS guidelines
-
-**Content Mapping**:
-- Protein requirements and supplementation
-- BMR/TDEE/NEAT calculations
-- Training progression and periodization
-- Workout splits and program design
-- Micronutrients and supplementation
-- Sleep and recovery optimization
-
-### 4. RAG Pipeline Features
-**Document Processing**:
-- RecursiveCharacterTextSplitter (1000 chars, 200 overlap)
-- Synthetic content generation from corpus metadata
-- HuggingFace embeddings (all-MiniLM-L6-v2, 384 dimensions)
-- FAISS vector store for fast similarity search
-
-**Query Processing**:
-- Retrieve top-8 relevant documents
-- Build context with source metadata
-- Generate LLM response with strict grounding prompts
-- Return answer with source links and previews
-
-**Faithfulness Optimizations**:
-- Temperature 0.0 (OpenAI / Groq) for conservative responses
-- Strict prompts: "Answer ONLY using information from sources"
-- Top-p 0.7, top-k 20 for focused sampling
-- Explicit source attribution required
-- Corpus fallback for failed LLM responses
-
-### 5. Streamlit Web Interface
-**4 Interactive Tabs**:
-1. **Courses**: Module-based learning paths with progress tracking
-2. **Ask Coach**: Interactive Q&A with quick question buttons
-3. **BMR Calculator**: Harris-Benedict formula with unit conversion
-4. **Query History**: Track all interactions and export history
-
-**Session State Management**:
-- Persistent query history
-- Learning progress tracking
-- Real-time UI updates
-
----
-
-## Learning Corpus
-
-The system uses a curated corpus of 23 evidence-based sources:
-
-### Source Types:
-- **Academic Papers**: Protein requirements, BMR calculations, training volume
-- **Government Resources**: USDA MyPlate, NIH fact sheets, NHS programs
-- **Expert Content**: Jeff Cavaliere (Athlean-X), expert podcast episodes
-- **Research Reviews**: Micronutrients, NEAT, sleep and performance
-
-### Key Domains Covered:
-- ✅ Training programming and progression
-- ✅ Macronutrient targets and timing
-- ✅ Micronutrient needs and sources
-- ✅ Calorie calculation (BMR, TDEE, NEAT)
-- ✅ Sleep and recovery optimization
-- ✅ Evidence-based supplementation
-
----
-
-## Technical Details
-
-### RAG Pipeline (`src/rag_pipeline.py`)
-
-**Core Class: `FitScienceRAG`**
-
-```python
-import os
-from src.rag_pipeline import FitScienceRAG
-
-# Initialize — host loads keys from .env; users never configure API keys
-rag = FitScienceRAG(
-    use_groq=True,                     # Default: Groq Llama (free)
-    groq_api_key=os.getenv("GROQ_API_KEY"),       # Host sets in .env
-    openai_api_key=os.getenv("OPENAI_API_KEY")    # Optional: host sets in .env
-)
-
-# Initialize system
-rag.initialize_system()
-
-# Query the system
-result = rag.query("How much protein should I eat?")
-
-# Result structure
-{
-    "answer": "Evidence-based answer with citations...",
-    "sources": [
-        {
-            "title": "Source title",
-            "url": "https://...",
-            "type": "Academic Paper",
-            "relevance": "High",
-            "notes": "Description",
-            "content_preview": "Preview text..."
-        }
-    ]
-}
+```dotenv
+OPENAI_API_KEY=...
+GROQ_API_KEY=...  # optional fallback
 ```
 
-**Key Methods**:
-- `load_corpus_from_csv()`: Load 23 sources from CSV
-- `create_synthetic_content()`: Generate documents with metadata mapping
-- `build_vectorstore()`: Create FAISS index with HuggingFace embeddings
-- `query()`: Main query interface with LLM generation
-- `calculate_bmr()`: Harris-Benedict BMR calculation
-- `calculate_tdee()`: TDEE with activity multipliers
-- `generate_openai_response()`: GPT-4o-mini (optional, high faithfulness)
-- `generate_groq_response()`: Groq Llama (default, free cloud API)
+## Reproduce the experiments
 
-**LLM Priority System** (host-configured; users do not set API keys):
-1. **OpenAI GPT-4o-mini** (if host sets `OPENAI_API_KEY`): Best faithfulness
-2. **Groq Llama** (if host sets `GROQ_API_KEY` in .env): Free, no user setup
-3. **Corpus-only fallback**: Direct source extraction
-
-### Vector Store:
-- **Embeddings**: HuggingFace sentence-transformers (all-MiniLM-L6-v2)
-- **Storage**: FAISS for fast similarity search
-- **Chunking**: 1000 chars with 200 overlap
-- **Retrieval**: Top-8 documents with metadata
-
----
-
-## Evaluation & Performance
-
-### Actual-context evaluation
-
-Run the evaluator with --offline for retrieval, routing, citation-contract, and
-latency checks. Set OPENAI_API_KEY and omit --offline to add RAGAS judging against
-the contexts retrieved at runtime.
-
-The former 0.857 aggregate must not be used as current performance evidence.
-See [RAG_v2_Implementation_and_Baseline.md](reports/RAG_v2_Implementation_and_Baseline.md)
-for the reproducible baseline and limitations.
-
-### Historical prototype journey
-
-1. **v1.0** (Llama 3.2 1B): 0.779 - Good baseline, perfect retrieval
-2. **v2.0** (Optimized Llama): 0.778 - Optimization attempts showed model limitations
-3. **v3.0** (OpenAI GPT-4o-mini): **0.857** - 286% faithfulness improvement
-
-**Historical lesson:** Model choice affected prototype output, but the old
-evaluation was not coupled to actual retrieved contexts. v2 therefore treats
-corpus quality, retrieval, safety, and evaluation design as separate variables.
-
-### Run Evaluation
 ```bash
-# Host: ensure GROQ_API_KEY (and optionally OPENAI_API_KEY) are in .env
-python src/ragas_evaluation_v3.py
+# Free, local 120-case regression; --offline disables generation and RAGAS.
+python src/ragas_evaluation_v3.py --offline
+
+# Paid canonical run: 20 routing cases, 12 answerable cases judged by RAGAS.
+python src/ragas_evaluation_v3.py --canonical-only
+
+# Controlled ablations.
+python src/build_chunk_variants.py
+python src/run_chunking_ablation.py
+python src/run_embedding_ablation.py
+python src/run_retrieval_ablation.py
+python src/run_llm_ablation.py
 ```
 
----
+Runtime traces and detailed evaluation runs are intentionally gitignored. The
+versioned summaries live under `reports/`.
 
-## Usage Examples
+## Repository map
 
-### Sample Queries:
-1. "How much protein should I eat for muscle building?"
-2. "How do I calculate my daily calorie needs?"
-3. "What is progressive overload in training?"
-4. "What supplements are actually evidence-based?"
-5. "How much sleep do I need for recovery?"
+```text
+data/
+  evidence_sources.json          active source manifest
+  evidence_corpus.jsonl          434 provenance-preserving chunks
+  evaluation_gold_seeds.jsonl    20 approved semantic labels
+  evaluation_cases.jsonl         120 regression variants
+src/
+  rag_pipeline.py                safety, retrieval, generation, citations, trace
+  ingest_evidence.py             reproducible PMC ingestion
+  build_evaluation_set.py        label expansion
+  validate_evaluation_labels.py  gold-label integrity checks
+  ragas_evaluation_v3.py         actual-context evaluator
+  build_chunk_variants.py        fixed-snapshot re-chunking
+  run_*_ablation.py              controlled experiment runners
+  streamlit_app.py               learning portal UI
+reports/
+  Evidence_Source_Audit.md
+  Evaluation_Labeling_Guide.md
+  Ablation_Results_2026-09-16.md
+  RAG_v2_Implementation_and_Baseline.md
+```
 
-### Expected Output:
-- Evidence-based answers with practical advice
-- Source citations with links to original papers
-- Relevance scores and content previews
-- Structured, actionable recommendations
+## Known limitations
 
----
+- Only 8 active evidence sources and 20 semantic evaluation seeds.
+- Gold labels were reviewed by the project owner, not clinicians.
+- RAGAS is an LLM-as-judge signal and varies across runs; it complements rather
+  than replaces human domain review.
+- The ketogenic-diet seed exposes a real manifest-routing false positive, keeping
+  action accuracy at 0.950 and safe-abstention accuracy at 0.875.
+- GPT-4.1-mini won one small controlled run; a larger repeated evaluation is
+  required before calling the difference statistically reliable.
+- Groq `gpt-oss-20b` fallback is configured but not quality-approved because the
+  current account returned HTTP 429 during its ablation.
+
 ## License
 
-Academic project
-
----
-
-**FitScience Coach** - Making evidence-based fitness and nutrition accessible to everyone! 🏋️‍♀️💪
+Academic portfolio project.

@@ -1,81 +1,125 @@
-# FitScience RAG v2 — Evidence, Retrieval, and Evaluation Baseline
+# FitScience RAG v2 — Implementation and Evaluation Baseline
 
-## What changed
+## Scope
 
-The v1 prototype mapped source metadata to synthetic text. v2 replaces that path
-with a reproducible snapshot of 503 section-level chunks from 10 open-access PMC
-articles and position papers. Each chunk carries a stable chunk identifier, source
-URL, DOI, publication year, evidence level, population, and article section.
+The v1 prototype mapped source metadata to synthetic text. The current answer path
+uses a reproducible snapshot of 434 section-level chunks from 8 verified,
+open-access evidence sources. Two mismatched PMC records were disabled during the
+source audit. The separate 23-row curated CSV still supports legacy learning-portal
+content but is not indexed by this RAG path.
 
-The query path now performs PII masking, injection detection, medical-risk and
-coverage routing; conversational query rewriting; dense FAISS plus lexical BM25
-retrieval with reciprocal-rank fusion; metadata preference and adaptive context
-count; optional cross-encoder reranking; a citation contract; and JSONL tracing.
+Each active chunk stores a stable identifier, source ID, title, exact URL, DOI,
+publication year, evidence level, population, topic metadata, section, ingestion
+timestamp, and source text.
 
-Generation uses a small gateway policy: configured GPT-4o-mini is primary and a
-configured Groq model is invoked only after an OpenAI generation failure. Exact
-question results are cached in-process. The selected provider and cache outcome
-are included in the trace.
+## Runtime design
 
-Every generated bullet must cite an exact retrieved source label such as [S1].
-A lightweight lexical support check rejects malformed or unsupported lines and
-falls back to a source excerpt when needed.
+The query path performs:
+
+1. PII masking;
+2. prompt-injection and high-risk medical routing;
+3. evidence-manifest coverage checking;
+4. local all-MiniLM-L6-v2 embedding;
+5. FAISS dense and BM25 lexical retrieval;
+6. reciprocal-rank fusion with metadata preference;
+7. fixed top-6 evidence selection;
+8. GPT-4.1-mini evidence-only generation;
+9. claim-level `[S#]` citation verification;
+10. exact cache and JSONL trace recording.
+
+Groq `openai/gpt-oss-20b` is configured as a provider-failure fallback. It is not
+yet quality-approved because the current Groq account returned HTTP 429 during the
+controlled ablation. If no generation provider succeeds, the pipeline uses a
+retrieved source sentence and records `corpus-only` as the generation model.
 
 ## Evaluation correction
 
-The old evaluator supplied hand-written contexts to RAGAS. That measured a
-hypothetical context, not the passages the system retrieved. The v2 evaluator
-stores retrieved contexts from each actual query response and supplies only those
-to optional RAGAS judging.
+The historical evaluator supplied prewritten contexts to RAGAS. The corrected
+evaluator always captures the chunks retrieved by the running system and gives
+only those chunks to RAGAS. Approved gold chunks remain references, never inputs to
+retrieval.
 
-The 120 versioned draft cases cover answerable retrieval, unavailable topics,
-high-risk health questions, and prompt injection. They are regression labels, not
-clinical validation, and require dietitian or clinician review before any
-clinical-quality claim.
+The versioned set has 20 project-owner-approved semantic seeds expanded into 120
+query variants. It covers answerable questions, insufficient evidence, medical
+and vulnerable-population abstention, and prompt injection. These are regression
+labels, not clinical validation.
 
-## Latest offline baseline
+Changing chunk boundaries makes exact chunk IDs incomparable. The evaluator
+therefore adds evidence trigram recall/precision/F1 against the approved gold text.
+Exact gold-chunk metrics are reported only when retrieval and reference corpora
+share the same chunk IDs.
+
+## Selected offline baseline
 
 Run date: 2026-09-16
-Configuration: MiniLM embeddings, FAISS plus in-process BM25 reciprocal-rank
-fusion, no cross-encoder, corpus-only generation (no API key).
 
-| Metric | Result | Interpretation |
-|---|---:|---|
-| Cases | 120 | Draft, versioned regression set |
-| Action accuracy | 0.950 | Answer / abstain routing behavior |
-| Retrieval recall@k | 0.889 | Expected source appeared in actual retrieval |
-| MRR | 0.821 | Expected source ranking |
-| Citation contract pass rate | 1.000 | Format/support gate passed in this corpus-only run |
-| Safe-abstention accuracy | 0.875 | Known edge: ketogenic-diet questions overlap broad diet coverage |
-| p50 / p95 local retrieval latency | 6.0 / 7.2 ms | Excludes cold start and LLM latency |
+Cases: all 120 variants
 
-The ketogenic-diet edge is intentionally retained as a real coverage-boundary
-trade-off. Broad topic labels increase recall; narrower labels reduce potentially
-misleading answers. The next experiment should compare a fine-grained source
-coverage classifier with this conservative manifest without changing the test set.
+Configuration: 180/35 chunks, MiniLM-L6 embeddings, FAISS + BM25 RRF, fixed top-6,
+no cross-encoder, corpus-only generation.
 
-## Retrieval ablation: optional cross-encoder reranker
+| Metric | Result |
+|---|---:|
+| Action accuracy | 0.950 |
+| Source recall@k | 1.000 |
+| Source MRR | 0.885 |
+| Gold-chunk recall@k | 0.270 |
+| Gold-chunk precision@k | 0.130 |
+| Gold-chunk MRR | 0.321 |
+| Evidence trigram recall | 0.343 |
+| Evidence trigram precision | 0.181 |
+| Evidence trigram F1 | 0.232 |
+| Citation-contract pass rate | 1.000 |
+| Safe-abstention accuracy | 0.875 |
+| Mean retrieved context | 915 words |
+| p50 / p95 local latency | 5.9 / 6.9 ms |
 
-The same 120 cases were rerun with cross-encoder/ms-marco-MiniLM-L-6-v2 enabled.
-Only reranking changed.
+The routing miss is the deliberately retained ketogenic-diet boundary: broad
+`diet` coverage admits the query even though the active snapshot does not contain
+sufficient ketogenic-diet evidence.
 
-| Configuration | Recall@k | MRR | p50 latency | p95 latency |
-|---|---:|---:|---:|---:|
-| Hybrid FAISS + BM25 RRF | 0.889 | 0.821 | 6.0 ms | 7.2 ms |
-| Hybrid + cross-encoder reranker | 0.861 | 0.792 | 100.9 ms | 139.4 ms |
+## Canonical actual-context RAGAS
 
-On this small, draft-labelled corpus, reranking lowered both retrieval measures
-and added about 20x p50 latency. It is therefore disabled by default. This is a
-decision based on a controlled experiment, not a claim that reranking is generally
-harmful; repeat the ablation after expanding and clinician-reviewing the set.
+The LLM comparison used one canonical case per semantic seed. Twelve answerable
+cases were judged with GPT-4o-mini and `text-embedding-3-small`; non-answerable
+cases were scored by deterministic routing metrics.
+
+| Generator | Faithfulness | Answer relevancy | Context precision | Context recall | Citation pass | p50 latency |
+|---|---:|---:|---:|---:|---:|---:|
+| GPT-4o-mini | 1.000 | 0.522 | 0.956 | 0.944 | 0.917 | 1.09 s |
+| GPT-4.1-mini | 1.000 | 0.593 | 0.949 | 0.944 | 1.000 | 1.36 s |
+
+GPT-4.1-mini is the quality default because it improved relevance and citation
+contract compliance in this run. Its official list prices at the time of the test
+were about 2.67 times GPT-4o-mini for both input and output tokens. The set is too
+small for a statistical superiority claim; GPT-4o-mini remains the cost-sensitive
+alternative.
+
+## Advanced RAG decision
+
+No agentic RAG, LLM query rewriting, or multi-query retrieval was added. Fixed
+top-6 already reached source recall 1.000 on the full set and RAGAS context recall
+0.944 on canonical answerable cases. The current constraint is answer relevance
+and evaluation breadth, not an observed inability to find multi-document evidence.
+
+The next valid work is repeated evaluation, domain-expert review, and resolving
+coverage routing. Advanced retrieval should be introduced only with new multi-hop,
+ambiguous, or conversation-dependent labels that demonstrate a single-hop failure.
 
 ## Reproducible commands
 
-    python src/ingest_evidence.py
-    python src/build_evaluation_set.py
-    python src/ragas_evaluation_v3.py --offline
-    python src/ragas_evaluation_v3.py --reranker --offline
+```bash
+python src/validate_evaluation_labels.py
+python src/build_evaluation_set.py
+python src/ragas_evaluation_v3.py --offline
+python src/ragas_evaluation_v3.py --canonical-only
+python src/build_chunk_variants.py
+python src/run_chunking_ablation.py
+python src/run_embedding_ablation.py
+python src/run_retrieval_ablation.py
+python src/run_llm_ablation.py
+```
 
-Set OPENAI_API_KEY before running without --offline to add RAGAS Faithfulness,
-Answer Relevancy, and Context Precision on actual retrieved contexts. Do not
-aggregate those scores into a clinical-accuracy percentage.
+Do not aggregate the metrics above into a clinical-accuracy percentage. RAGAS is
+an LLM-as-judge signal and should be interpreted with per-case review and repeated
+runs.
